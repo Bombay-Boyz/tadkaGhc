@@ -5,6 +5,7 @@
 module Main (main) where
 
 import qualified Data.ByteString as BS
+import System.Exit (ExitCode (ExitFailure))
 import Data.List.NonEmpty (NonEmpty ((:|)))
 import Data.Text (Text)
 import Prettyprinter (Doc, defaultLayoutOptions, layoutPretty)
@@ -17,6 +18,8 @@ import Test.Tasty.HUnit
 import Tadka.GHCProtocol.BuildTool
 import Tadka.GHCProtocol.Decode
 import Tadka.GHCProtocol.Diagnostic
+import Tadka.GHCProtocol.Opaque
+import Tadka.GHCProtocol.Process
 import Tadka.GHCProtocol.Schema
 import Tadka.GHCProtocol.Span
 import Tadka.GHCProtocol.Types
@@ -36,6 +39,7 @@ tests = testGroup "tadka-ghc"
   , testGroup "Phase 3: coordinate conversion / source binding" phase3Tests
   , testGroup "Phase 5: Tadka projection" phase5Tests
   , testGroup "Phase 6: build tool wrapper" phase6Tests
+  , testGroup "Phase 7: opaque output capture" phase7Tests
   ]
 
 --------------------------------------------------------------------------------
@@ -559,4 +563,109 @@ phase6Tests =
           (wholeLines, wholeRest) = splitCompleteLines whole
       -- reference: splitting in one piece
       assertEqual "reference split" (["abc", "def"], "ghi") (wholeLines, wholeRest)
+  ]
+--------------------------------------------------------------------------------
+-- Phase 7: opaque output capture / line classification (§31.5)
+--------------------------------------------------------------------------------
+
+validDiagLine :: BS.ByteString
+validDiagLine =
+  "{\"version\":\"1.0\",\"ghcVersion\":\"9.10.1\",\"span\":null,\"severity\":\"Warning\",\"code\":null,\"message\":[\"msg\"],\"hints\":[]}"
+
+panicLine1, panicLine2, blankLine, progressLine :: BS.ByteString
+panicLine1   = "ghc: panic! (the 'impossible' happened)"
+panicLine2   = "  GHC version 9.10.1:"
+blankLine    = ""
+progressLine = "cabal: Resolving dependencies..."
+
+phase7Tests :: [TestTree]
+phase7Tests =
+  [ testCase "a GHC panic with no diagnostic JSON produces ClassifiedOpaque, not silently dropped" $ do
+      let result = classifyStream StdErr [panicLine1, panicLine2, blankLine]
+      case result of
+        [ClassifiedOpaque o] ->
+          assertBool "raw bytes contain both panic lines"
+            (BS.isInfixOf panicLine1 (opaqueRawBytes o) && BS.isInfixOf panicLine2 (opaqueRawBytes o))
+        other -> assertFailure ("expected a single ClassifiedOpaque block, got " <> show other)
+
+  , testCase "a panic block with no trailing blank line at EOF is still captured (finalize)" $ do
+      let result = classifyStream StdErr [panicLine1, panicLine2]
+      case result of
+        [ClassifiedOpaque _] -> pure ()
+        other -> assertFailure ("expected a finalized ClassifiedOpaque block, got " <> show other)
+
+  , testCase "mixed valid-diagnostic and non-JSON lines classify each line correctly" $ do
+      let result = classifyStream StdErr [validDiagLine, progressLine, panicLine1, blankLine]
+      case result of
+        [ClassifiedDiagnostic _, ClassifiedOpaque progressRecord, ClassifiedOpaque _] ->
+          assertEqual "progress text preserved verbatim" progressLine (opaqueRawBytes progressRecord)
+        other -> assertFailure ("unexpected classification shape: " <> show other)
+
+  , testCase "cabal's own progress text is never misclassified as a GHC diagnostic" $
+      case classifyStream StdErr [progressLine] of
+        [ClassifiedOpaque _] -> pure ()
+        other -> assertFailure ("expected ClassifiedOpaque, got " <> show other)
+
+  , testCase "classifyInterleaved: a pending panic on one stream doesn't disturb the other" $ do
+      let input =
+            [ (StdErr, panicLine1)
+            , (StdOut, validDiagLine)
+            , (StdErr, blankLine)
+            ]
+      case classifyInterleaved input of
+        [ClassifiedDiagnostic _, ClassifiedOpaque _] -> pure ()
+        other -> assertFailure ("unexpected interleaved classification: " <> show other)
+
+  , testCase "attachCompilerResult: CompilerSucceeded leaves classifications untouched" $ do
+      let cs = classifyStream StdOut [validDiagLine, progressLine]
+      assertEqual "unchanged" cs (attachCompilerResult CompilerSucceeded cs)
+
+  , testCase "attachCompilerResult: failure sets Just result on every opaque, leaves diagnostics alone" $ do
+      let cs = classifyStream StdOut [validDiagLine, progressLine]
+          result = CompilerFailed (ExitFailure 1)
+          attached = attachCompilerResult result cs
+      case attached of
+        [ClassifiedDiagnostic _, ClassifiedOpaque o] ->
+          assertEqual "opaqueCompilerResult set" (Just result) (opaqueCompilerResult o)
+        other -> assertFailure ("unexpected shape: " <> show other)
+
+  , testCase "attachCompilerResult: non-zero exit with zero diagnostics still yields one opaque record" $ do
+      let result = CompilerFailed (ExitFailure 1)
+      case attachCompilerResult result [] of
+        [ClassifiedOpaque o] -> assertEqual "compiler result" (Just result) (opaqueCompilerResult o)
+        other -> assertFailure ("expected one synthetic ClassifiedOpaque, got " <> show other)
+
+  , testCase "classifyBuildOutput: buildCompilerResult reflects failure even when every line decoded fine" $ do
+      let br = BuildResult (CompilerFailed (ExitFailure 1)) [(StdOut, validDiagLine)]
+          outcome = classifyBuildOutput br
+      assertEqual "buildCompilerResult" (CompilerFailed (ExitFailure 1)) (buildCompilerResult outcome)
+
+  , testCase "OpaqueGhcOutput: Tadka.severity is always SevError" $ do
+      let o = OpaqueGhcOutput StdErr "boom" "boom" Nothing
+      assertEqual "severity" Tadka.SevError (Tadka.severity o)
+
+  , testCase "OpaqueGhcOutput: Tadka.context is NoContext (no span ever existed)" $ do
+      let o = OpaqueGhcOutput StdErr "boom" "boom" Nothing
+      case Tadka.context o of
+        Tadka.NoContext -> pure ()
+        _               -> assertFailure "expected NoContext"
+
+  , testCase "OpaqueGhcOutput's projection is never confused with GhcDiagnostic's (distinct types)" $ do
+      -- The real guarantee here is at the type level: OpaqueGhcOutput and
+      -- GhcDiagnostic are distinct types with independent Diagnostic
+      -- instances, so no call site can accidentally substitute one for
+      -- the other. This test just exercises both concretely.
+      diagResult <- decodeFixtureFull "test/fixtures/schema/1.0/minimal.json"
+      case diagResult of
+        Left e -> assertFailure (show e)
+        Right d -> do
+          let o = OpaqueGhcOutput StdErr "x" "x" Nothing
+          assertBool "diag severity may be Warning" (Tadka.severity d == Tadka.SevWarning)
+          assertBool "opaque severity is always Error" (Tadka.severity o == Tadka.SevError)
+
+  , testCase "isPanicMarker: recognizes the prefix regardless of trailing summary text" $
+      assertBool "matches" (isPanicMarker "ghc: panic! (the 'impossible' happened)\n  GHC version 9.10.1:")
+
+  , testCase "isPanicMarker: does not match ordinary output" $
+      assertBool "no match" (not (isPanicMarker progressLine))
   ]

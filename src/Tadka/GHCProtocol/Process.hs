@@ -28,7 +28,7 @@ data CompilerResult
   | CompilerSignalled Signal
   | CompilerTimedOut
   | CompilerStartFailed ProcessError
-  deriving stock (Show)
+  deriving stock (Eq, Show)
 
 -- | The POSIX/OS signal number that terminated the child process, where
 -- the runtime is able to surface one.
@@ -39,7 +39,7 @@ newtype Signal = Signal Int
 -- not be started (executable not found, permission denied, working
 -- directory missing, etc.).
 newtype ProcessError = ProcessError Text
-  deriving stock (Show)
+  deriving stock (Eq, Show)
 
 data BuildResult = BuildResult
   { compilerResult :: CompilerResult
