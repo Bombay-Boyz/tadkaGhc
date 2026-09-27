@@ -1,14 +1,18 @@
--- | Phase 1 (wire/schema dispatch) and Phase 2 (semantic promotion,
--- decodeDiagnosticLine) tests. Vision §31.1/§31.3; spec Phase 9.1.
+-- | Phase 1 (wire/schema dispatch), Phase 2 (semantic promotion,
+-- decodeDiagnosticLine), and Phase 3 (coordinate conversion, source
+-- binding) tests. Vision §31.1/§31.2/§31.3; spec Phase 9.1.
 module Main (main) where
 
 import qualified Data.ByteString as BS
 import Data.List.NonEmpty (NonEmpty ((:|)))
+import qualified Tadka
 import Test.Tasty (TestTree, defaultMain, testGroup)
-import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase)
+import Test.Tasty.HUnit
+  (Assertion, assertBool, assertEqual, assertFailure, testCase)
 
 import Tadka.GHCProtocol.Decode
 import Tadka.GHCProtocol.Schema
+import Tadka.GHCProtocol.Span
 import Tadka.GHCProtocol.Types
 
 main :: IO ()
@@ -23,6 +27,7 @@ tests = testGroup "tadka-ghc"
       , testGroup "schema dispatch" dispatchTests
       ]
   , testGroup "Phase 2: semantic promotion" phase2Tests
+  , testGroup "Phase 3: coordinate conversion / source binding" phase3Tests
   ]
 
 --------------------------------------------------------------------------------
@@ -191,12 +196,6 @@ phase2Tests =
           (ghcHints d)
         Left e -> assertFailure (show e)
 
-  , testCase "no fabricated related/cause/id at the type level: GhcDiagnostic carries none" $
-      -- Structural check: GhcDiagnostic's field list has no related/cause/id
-      -- field to fabricate into -- §21 is enforced by this type's shape,
-      -- exercised properly once the Tadka.Diagnostic instance exists (Phase 5).
-      pure ()
-
   , testCase "source/file identity preserved through promotion (§20)" $ do
       result <- decodeFixtureFull "test/fixtures/schema/1.0/invalid-span-order.json"
       case result of
@@ -239,3 +238,130 @@ phase2Tests =
       r12 <- decodeFixtureFull "test/fixtures/schema/1.2/minimal.json"
       mapM_ (either (assertFailure . show) (const (pure ()))) [r10, r11, r12]
   ]
+
+--------------------------------------------------------------------------------
+-- Phase 3: coordinate conversion / source binding (§31.2, §18's table)
+--------------------------------------------------------------------------------
+
+-- | Builds a validated 'GhcSpan' from raw 1-based coordinates, failing the
+-- test (not the program) if the coordinates themselves are invalid.
+buildSpanIO :: FilePath -> Integer -> Integer -> Integer -> Integer -> IO GhcSpan
+buildSpanIO file sl sc el ec =
+  case do
+    l1 <- mkLine sl
+    c1 <- mkColumn sc
+    l2 <- mkLine el
+    c2 <- mkColumn ec
+    mkGhcSpan file l1 c1 l2 c2
+  of
+    Right sp -> pure sp
+    Left e   -> assertFailure ("buildSpanIO: " <> show e)
+
+phase3Tests :: [TestTree]
+phase3Tests =
+  [ testCase "computeLineMetadata: two plain lines" $ do
+      let meta = computeLineMetadata "abc\ndef"
+      case meta of
+        (LineMetadata 0 3) :| [LineMetadata 4 3] -> pure ()
+        other -> assertFailure ("unexpected metadata: " <> show other)
+
+  , testCase "computeLineMetadata: CRLF excludes \\r from line content (§3.1)" $ do
+      let meta = computeLineMetadata "abc\r\ndef"
+      case meta of
+        (LineMetadata 0 3) :| [LineMetadata 5 3] -> pure ()
+        other -> assertFailure ("unexpected metadata: " <> show other)
+
+  , testCase "computeLineMetadata: trailing newline yields an empty final line" $ do
+      let meta = computeLineMetadata "abc\n"
+      case meta of
+        (LineMetadata 0 3) :| [LineMetadata 4 0] -> pure ()
+        other -> assertFailure ("unexpected metadata: " <> show other)
+
+  , testCase "coordinateToOffset: first character of first line is offset 0" $ do
+      let meta = computeLineMetadata "abc\ndef"
+      l <- either (assertFailure . show) pure (mkLine 1)
+      c <- either (assertFailure . show) pure (mkColumn 1)
+      assertEqual "offset" (Right 0) (coordinateToOffset meta l c)
+
+  , testCase "coordinateToOffset: start of second line" $ do
+      let meta = computeLineMetadata "abc\ndef"
+      l <- either (assertFailure . show) pure (mkLine 2)
+      c <- either (assertFailure . show) pure (mkColumn 1)
+      assertEqual "offset" (Right 4) (coordinateToOffset meta l c)
+
+  , testCase "coordinateToOffset: line beyond source fails" $ do
+      let meta = computeLineMetadata "abc\ndef"
+      l <- either (assertFailure . show) pure (mkLine 99)
+      c <- either (assertFailure . show) pure (mkColumn 1)
+      case coordinateToOffset meta l c of
+        Left _  -> pure ()
+        Right o -> assertFailure ("expected Left, got offset " <> show o)
+
+  , testCase "coordinateToOffset: column beyond line length fails" $ do
+      let meta = computeLineMetadata "abc\ndef"
+      l <- either (assertFailure . show) pure (mkLine 1)
+      c <- either (assertFailure . show) pure (mkColumn 99)
+      case coordinateToOffset meta l c of
+        Left _  -> pure ()
+        Right o -> assertFailure ("expected Left, got offset " <> show o)
+
+  , testCase "coordinateToOffset: exclusive end-of-line column is legal (§3.1)" $ do
+      let meta = computeLineMetadata "abc\ndef"
+      l <- either (assertFailure . show) pure (mkLine 1)
+      c <- either (assertFailure . show) pure (mkColumn 4) -- one past 'c'
+      assertEqual "offset" (Right 3) (coordinateToOffset meta l c)
+
+  , testCase "convertSpan: end-to-end success produces a real Tadka.Context" $ do
+      sp <- buildSpanIO "Foo.hs" 1 5 1 6  -- the 'x' in "let x = 1"
+      case convertSpan (SourceText "let x = 1\n") sp of
+        Left err  -> assertFailure ("expected Right, got " <> show err)
+        Right ctx -> case Tadka.contextLabelStates ctx of
+          [Tadka.LabelOk _] -> pure ()
+          other -> assertFailure ("unexpected label states: " <> show other)
+
+  , testCase "convertSpan: coordinates outside the source fail with InvalidCoordinates" $ do
+      sp <- buildSpanIO "Foo.hs" 99 1 99 2
+      case convertSpan (SourceText "let x = 1\n") sp of
+        Left (InvalidCoordinates _ _) -> pure ()
+        other -> assertFailure ("expected InvalidCoordinates, got " <> show other)
+
+  , testCase "bindSpan: Nothing -> NoSpan" $ do
+      result <- bindSpan stubProviderUnused Nothing
+      case result of
+        NoSpan -> pure ()
+        other  -> assertFailure ("expected NoSpan, got " <> show other)
+
+  , testCase "bindSpan: clean not-found -> SpanNoSource, not an error (§2/§18)" $ do
+      sp <- buildSpanIO "Missing.hs" 1 1 1 2
+      result <- bindSpan (stubProvider (const (pure (Right Nothing)))) (Just sp)
+      case result of
+        SpanNoSource _ -> pure ()
+        other -> assertFailure ("expected SpanNoSource, got " <> show other)
+
+  , testCase "bindSpan: genuine lookup failure -> SpanSourceUnavailable, distinct from not-found" $ do
+      sp <- buildSpanIO "Foo.hs" 1 1 1 2
+      let err = SourceIOError "permission denied"
+      result <- bindSpan (stubProvider (const (pure (Left err)))) (Just sp)
+      case result of
+        SpanSourceUnavailable _ e -> assertEqual "error" err e
+        other -> assertFailure ("expected SpanSourceUnavailable, got " <> show other)
+
+  , testCase "bindSpan: success -> SpanBound with a real Context" $ do
+      sp <- buildSpanIO "Foo.hs" 1 5 1 6
+      let provide = const (pure (Right (Just (SourceText "let x = 1\n"))))
+      result <- bindSpan (stubProvider provide) (Just sp)
+      case result of
+        SpanBound ctx -> case Tadka.contextLabelStates ctx of
+          [Tadka.LabelOk _] -> pure ()
+          other -> assertFailure ("unexpected label states: " <> show other)
+        other -> assertFailure ("expected SpanBound, got " <> show other)
+
+  , testCase "fileSourceProvider: nonexistent file yields Right Nothing, not an exception" $ do
+      result <- lookupSource fileSourceProvider "/nonexistent/path/definitely-not-there.hs"
+      case result of
+        Right Nothing -> pure ()
+        other -> assertFailure ("expected Right Nothing, got " <> show other)
+  ]
+  where
+    stubProvider f = SourceProvider f
+    stubProviderUnused = SourceProvider (\_ -> pure (Right Nothing))

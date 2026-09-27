@@ -32,8 +32,10 @@ module Tadka.GHCProtocol.Types
     -- * Coordinates and spans (structural only; source binding is Phase 3)
   , Line
   , mkLine
+  , unLine
   , Column
   , mkColumn
+  , unColumn
   , GhcSpan (..)
   , mkGhcSpan
   , promoteSpan
@@ -158,11 +160,17 @@ newtype Column = Column Int
 
 -- | Total: rejects both ends of the range a wire Integer could fall
 -- outside of. One-based, per §19/§3.1's (provisional) convention.
+unLine :: Line -> Int
+unLine (Line n) = n
+
 mkLine :: Integer -> Either DecodeError Line
 mkLine n
   | n < 1                            = Left (InvalidCoordinate "line numbers are 1-based; got " n)
   | n > toInteger (maxBound :: Int)  = Left (InvalidCoordinate "line number exceeds Int range; got " n)
   | otherwise                        = Right (Line (fromInteger n))
+
+unColumn :: Column -> Int
+unColumn (Column n) = n
 
 mkColumn :: Integer -> Either DecodeError Column
 mkColumn n
