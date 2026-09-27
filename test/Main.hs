@@ -40,6 +40,7 @@ tests = testGroup "tadka-ghc"
   , testGroup "Phase 5: Tadka projection" phase5Tests
   , testGroup "Phase 6: build tool wrapper" phase6Tests
   , testGroup "Phase 7: opaque output capture" phase7Tests
+  , testGroup "Phase 8: pure stream semantics" phase8Tests
   ]
 
 --------------------------------------------------------------------------------
@@ -669,3 +670,43 @@ phase7Tests =
   , testCase "isPanicMarker: does not match ordinary output" $
       assertBool "no match" (not (isPanicMarker progressLine))
   ]
+--------------------------------------------------------------------------------
+-- Phase 8: pure stream semantics over known-diagnostic JSON Lines (§23)
+--------------------------------------------------------------------------------
+
+phase8Tests :: [TestTree]
+phase8Tests =
+  [ testCase "decodeDiagnosticStream: multiple valid lines all decode" $ do
+      let ls = [validDiagLine, validDiagLine]
+      assertEqual "count" 2 (length (decodeDiagnosticStream ls))
+      assertBool "all Right" (all isRightE (decodeDiagnosticStream ls))
+
+  , testCase "decodeDiagnosticStream: blank lines are skipped, not errors" $ do
+      let ls = [validDiagLine, "", validDiagLine]
+      assertEqual "only 2 records, blank skipped" 2 (length (decodeDiagnosticStream ls))
+
+  , testCase "decodeDiagnosticStream: CRLF line ending is normalized before decoding" $ do
+      let crlfLine = validDiagLine <> "\r"
+      case decodeDiagnosticStream [crlfLine] of
+        [Right _] -> pure ()
+        other -> assertFailure ("expected a single Right after CRLF stripping, got " <> show (length other))
+
+  , testCase "decodeDiagnosticStream: a malformed record does not obscure others' results" $ do
+      let ls = [validDiagLine, "not json at all", validDiagLine]
+          results = decodeDiagnosticStream ls
+      assertEqual "3 non-blank lines -> 3 results" 3 (length results)
+      case results of
+        [Right _, Left _, Right _] -> pure ()
+        other -> assertFailure ("unexpected result shape: " <> show (map isRightE other))
+
+  , testCase "decodeDiagnosticStream: length is at most input length, equal iff no blank lines" $ do
+      let withBlank    = [validDiagLine, "", validDiagLine]
+          withoutBlank  = [validDiagLine, validDiagLine]
+      assertBool "with blank: fewer results than input lines"
+        (length (decodeDiagnosticStream withBlank) < length withBlank)
+      assertEqual "without blank: equal count"
+        (length withoutBlank) (length (decodeDiagnosticStream withoutBlank))
+  ]
+  where
+    isRightE (Right _) = True
+    isRightE (Left _)  = False

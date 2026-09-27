@@ -16,11 +16,14 @@ module Tadka.GHCProtocol.Decode
   , promoteV1_1
   , promoteV1_2
   , decodeDiagnosticLine
+  , decodeDiagnosticStream
   ) where
 
 import Data.Aeson (Value (..), eitherDecodeStrict)
 import Data.Aeson.Types (Object, Parser, parseEither, (.:), (.:?))
+import Data.Maybe (mapMaybe)
 import Data.ByteString (ByteString)
+import qualified Data.ByteString as BS
 import qualified Data.Text as Text
 
 import Tadka.GHCProtocol.Schema
@@ -180,3 +183,33 @@ promoteV1_2 f = do
 -- I/O, process management, streaming frameworks, and Tadka rendering.
 decodeDiagnosticLine :: ByteString -> Either DecodeError GhcDiagnostic
 decodeDiagnosticLine bs = decodeSomeRawDiagnostic bs >>= promote
+
+--------------------------------------------------------------------------------
+-- Stream semantics over a stream KNOWN to be GHC diagnostic JSON Lines
+-- (vision §23; spec Phase 8). Distinct from Opaque.hs's classification:
+-- that handles build-tool output that may contain non-diagnostic lines
+-- by design; this handles a stream that is already known to be nothing
+-- but diagnostics (e.g. GHC invoked directly, or a captured diagnostics
+-- file).
+--------------------------------------------------------------------------------
+
+-- | Total: 'BS.take' is total for any 'Int', including a negative one,
+-- so this does not rely on an adjacent guard having already proven the
+-- input non-empty the way a guarded 'BS.init' would -- a function only
+-- safe because of an adjacent guard is exactly the pattern this
+-- codebase avoids, even when the guard happens to make it correct.
+stripTrailingCR :: ByteString -> ByteString
+stripTrailingCR bs
+  | BS.isSuffixOf "\r" bs = BS.take (BS.length bs - 1) bs
+  | otherwise              = bs
+
+-- | Total. Blank lines are skipped (documented, not silent); CRLF is
+-- normalized before decoding; every surviving line keeps its own
+-- Either, so one malformed record never obscures another's success or
+-- failure (§23).
+decodeDiagnosticStream :: [ByteString] -> [Either DecodeError GhcDiagnostic]
+decodeDiagnosticStream = mapMaybe decodeNonBlank . map stripTrailingCR
+  where
+    decodeNonBlank bs
+      | BS.null bs = Nothing
+      | otherwise  = Just (decodeDiagnosticLine bs)
