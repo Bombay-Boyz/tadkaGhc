@@ -1,0 +1,4 @@
+# Severity split (spec Phase 10): style-only suggestions are non-blocking,
+# correctness/partiality hints are blocking. Fill in ignore/error rules
+# here as categories are identified.
+- ignore: {}

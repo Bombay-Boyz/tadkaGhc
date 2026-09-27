@@ -1,0 +1,8 @@
+packages: .
+
+-- TODO(Phase 10): pin the exact tadka release this bridge is written
+-- against, per spec Phase 10's dependency-bounds record.
+-- source-repository-package
+--   type: git
+--   location: https://github.com/<org>/tadka.git
+--   tag: <pinned-commit-or-tag>

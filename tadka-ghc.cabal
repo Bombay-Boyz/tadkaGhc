@@ -1,0 +1,94 @@
+cabal-version:      3.0
+name:                tadka-ghc
+version:             0.1.0.0
+synopsis:            Adapter for GHC's external JSON diagnostics protocol, projecting into Tadka.
+build-type:          Simple
+
+common warnings
+  ghc-options:
+    -Wall -Werror -Wincomplete-patterns -Wincomplete-uni-patterns
+    -Wincomplete-record-updates -Wmissing-fields -Wredundant-constraints
+
+common extensions
+  default-extensions:
+    GADTs
+    DataKinds
+    KindSignatures
+    StandaloneDeriving
+    StrictData
+    DerivingStrategies
+    DeriveFunctor
+    LambdaCase
+    OverloadedStrings
+    ScopedTypeVariables
+    NamedFieldPuns
+    TypeApplications
+    BangPatterns
+    EmptyDataDecls
+
+-- Core library: pure GHC adaptation, no process I/O (spec Phase 2, I-35).
+library
+  import:           warnings, extensions
+  hs-source-dirs:   src
+  exposed-modules:
+    Tadka.GHCProtocol
+    Tadka.GHCProtocol.Types
+    Tadka.GHCProtocol.Schema
+    Tadka.GHCProtocol.Decode
+    Tadka.GHCProtocol.Span
+    Tadka.GHCProtocol.Diagnostic
+    Tadka.GHCProtocol.BuildTool
+    Tadka.GHCProtocol.Opaque
+    Tadka.GHCProtocol.Process
+  build-depends:
+      base >=4 && <5
+    , aeson >=2.0
+    , text
+    , bytestring
+    , containers
+    , filepath
+    , directory
+    , prettyprinter
+    -- , tadka   -- TODO: uncomment once tadka.git is pinned in cabal.project
+  default-language: Haskell2010
+
+-- Process-execution component: the only place typed-process is a
+-- dependency (spec Phase 6.4/I-35).
+library tadka-ghc-process
+  import:           warnings, extensions
+  hs-source-dirs:   process
+  exposed-modules:
+    Tadka.GHCProtocol.Runner
+  build-depends:
+      base >=4 && <5
+    , tadka-ghc
+    , typed-process
+    , bytestring
+    , text
+  default-language: Haskell2010
+
+executable tadka-ghc
+  import:           warnings, extensions
+  hs-source-dirs:   app
+  main-is:          Main.hs
+  build-depends:
+      base >=4 && <5
+    , tadka-ghc
+    , tadka-ghc-process
+  default-language: Haskell2010
+
+test-suite tadka-ghc-test
+  import:           warnings, extensions
+  type:             exitcode-stdio-1.0
+  hs-source-dirs:   test
+  main-is:          Main.hs
+  build-depends:
+      base >=4 && <5
+    , tadka-ghc
+    , tadka-ghc-process
+    , tasty
+    , tasty-hedgehog
+    , hedgehog
+    , tasty-golden
+    , tasty-hunit
+  default-language: Haskell2010
