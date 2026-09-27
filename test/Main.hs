@@ -14,6 +14,7 @@ import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
   (Assertion, assertBool, assertEqual, assertFailure, testCase)
 
+import Tadka.GHCProtocol.BuildTool
 import Tadka.GHCProtocol.Decode
 import Tadka.GHCProtocol.Diagnostic
 import Tadka.GHCProtocol.Schema
@@ -34,6 +35,7 @@ tests = testGroup "tadka-ghc"
   , testGroup "Phase 2: semantic promotion" phase2Tests
   , testGroup "Phase 3: coordinate conversion / source binding" phase3Tests
   , testGroup "Phase 5: Tadka projection" phase5Tests
+  , testGroup "Phase 6: build tool wrapper" phase6Tests
   ]
 
 --------------------------------------------------------------------------------
@@ -468,4 +470,93 @@ phase5Tests =
   , testCase "renderSourceBindingError is total and human-readable" $ do
       sp <- buildSpanIO "Foo.hs" 1 1 1 2
       assertBool "non-empty" (renderSourceBindingError (InvalidCoordinates sp "x") /= "")
+  ]
+--------------------------------------------------------------------------------
+-- Phase 6: build tool detection, flag injection, chunk framing (§31.5)
+--------------------------------------------------------------------------------
+
+phase6Tests :: [TestTree]
+phase6Tests =
+  [ testCase "detectBuildTool: explicit override bypasses detection entirely" $ do
+      result <- detectBuildTool (Just Stack) "test/fixtures/build/cabal-only"
+      assertEqual "detected" (Right Stack) result
+
+  , testCase "detectBuildTool: cabal-only fixture selects Cabal" $ do
+      result <- detectBuildTool Nothing "test/fixtures/build/cabal-only"
+      assertEqual "detected" (Right Cabal) result
+
+  , testCase "detectBuildTool: stack.yaml wins even alongside a .cabal file" $ do
+      result <- detectBuildTool Nothing "test/fixtures/build/stack-only"
+      assertEqual "detected" (Right Stack) result
+
+  , testCase "detectBuildTool: more than one .cabal file is ambiguous" $ do
+      result <- detectBuildTool Nothing "test/fixtures/build/ambiguous"
+      case result of
+        Left (AmbiguousProjectFiles _) -> pure ()
+        other -> assertFailure ("expected AmbiguousProjectFiles, got " <> show other)
+
+  , testCase "detectBuildTool: no recognized files fails explicitly" $ do
+      result <- detectBuildTool Nothing "test/fixtures/build/none"
+      assertEqual "detected" (Left NoRecognizedProjectFile) result
+
+  , testCase "classifyGhcFlag: -fno-diagnostics-as-json is NOT a substring false-positive" $
+      assertEqual "classified" (Just DisableDiagnosticsJson)
+        (classifyGhcFlag "-fno-diagnostics-as-json")
+
+  , testCase "classifyGhcFlag: enable flag recognized" $
+      assertEqual "classified" (Just EnableDiagnosticsJson)
+        (classifyGhcFlag "-fdiagnostics-as-json")
+
+  , testCase "extractGhcOptionTokens: multiple --ghc-options accumulate, not override" $
+      assertEqual "tokens"
+        ["-Wall", "-fdiagnostics-as-json", "-O2"]
+        (extractGhcOptionTokens ["--ghc-options=-Wall -fdiagnostics-as-json", "--ghc-options=-O2"])
+
+  , testCase "diagnosticsJsonCurrentlyEnabled: last occurrence wins" $
+      assertBool "enabled"
+        (diagnosticsJsonCurrentlyEnabled
+          ["--ghc-options=-fno-diagnostics-as-json", "--ghc-options=-fdiagnostics-as-json"])
+
+  , testCase "diagnosticsJsonCurrentlyEnabled: absent means not enabled" $
+      assertBool "not enabled" (not (diagnosticsJsonCurrentlyEnabled ["--ghc-options=-Wall"]))
+
+  , testCase "injectDiagnosticsFlag: present after injection, even with an explicit -fno- first" $ do
+      let args = injectDiagnosticsFlag Cabal ["--ghc-options=-fno-diagnostics-as-json"]
+      assertBool "enabled after injection" (diagnosticsJsonCurrentlyEnabled args)
+
+  , testCase "injectDiagnosticsFlag: does not remove the user's own flag text" $ do
+      let original = "--ghc-options=-fno-diagnostics-as-json"
+          args      = injectDiagnosticsFlag Cabal [original]
+      assertBool "original text preserved" (original `elem` args)
+
+  , testCase "injectDiagnosticsFlag: idempotent" $ do
+      let once  = injectDiagnosticsFlag Cabal ["--ghc-options=-Wall"]
+          twice = injectDiagnosticsFlag Cabal once
+      assertEqual "idempotent" once twice
+
+  , testCase "injectDiagnosticsFlag: already-enabled args are left untouched (no redundant duplicate)" $ do
+      let args = ["--ghc-options=-fdiagnostics-as-json"]
+      assertEqual "unchanged" args (injectDiagnosticsFlag Cabal args)
+
+  , testCase "feedChunk/flushFramer: single chunk containing multiple lines" $ do
+      let (st, lns) = feedChunk emptyFramerState "line1\nline2\nline3\n"
+      assertEqual "lines" ["line1", "line2", "line3"] lns
+      assertEqual "flush after trailing newline" [] (flushFramer st)
+
+  , testCase "feedChunk: a line split across two chunks reconstructs correctly" $ do
+      let (st1, lns1) = feedChunk emptyFramerState "partial-li"
+          (_st2, lns2) = feedChunk st1 "ne\nnext\n"
+      assertEqual "first chunk yields no complete lines" [] lns1
+      assertEqual "second chunk completes the split line" ["partial-line", "next"] lns2
+
+  , testCase "flushFramer: recovers a final unterminated line at EOF" $ do
+      let (st, lns) = feedChunk emptyFramerState "no-trailing-newline"
+      assertEqual "no complete lines yet" [] lns
+      assertEqual "flushed" ["no-trailing-newline"] (flushFramer st)
+
+  , testCase "splitCompleteLines: reconstructs input split at every possible boundary" $ do
+      let whole = "abc\ndef\nghi"
+          (wholeLines, wholeRest) = splitCompleteLines whole
+      -- reference: splitting in one piece
+      assertEqual "reference split" (["abc", "def"], "ghi") (wholeLines, wholeRest)
   ]
