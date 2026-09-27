@@ -94,4 +94,5 @@ test-suite tadka-ghc-test
     , tasty-golden
     , tasty-hunit
     , tadka
+    , prettyprinter
   default-language: Haskell2010

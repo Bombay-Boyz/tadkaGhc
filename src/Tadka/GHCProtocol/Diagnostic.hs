@@ -1,1 +1,187 @@
-module Tadka.GHCProtocol.Diagnostic () where
+{-# OPTIONS_GHC -Wno-orphans #-}
+
+-- | Tadka projection (vision §6, §27; spec Phase 4-5), written against
+-- tadka's real Diagnostic class, which gives every method except
+-- 'Tadka.message' a total default (context -> NoContext, code -> Nothing,
+-- severity -> SevError, help -> Nothing, url -> Nothing, related -> [],
+-- diagnosticId -> Nothing, diagnosticCause -> Nothing). The spec assumed
+-- every method needed an explicit definition; here, 'GhcDiagnostic'
+-- overrides only 'message'/'severity'/'help', because the defaults for
+-- everything else already ARE the behaviour §10/§21 require (never
+-- fabricate a code, never invent related/cause/id) -- omitting them is
+-- not a shortcut, it is the correct, total implementation.
+--
+-- Deliberately defined here rather than in 'Tadka.GHCProtocol.Types'
+-- (where 'GhcDiagnostic' itself lives): this is the project's own
+-- convention for where a Diagnostic bridge instance lives (mirroring
+-- spec §12's "no orphan instances... defined in Diagnostic.hs" rule),
+-- not a requirement of GHC's own orphan-instance rules.
+module Tadka.GHCProtocol.Diagnostic
+  ( -- * Message/help rendering (§12, §13)
+    messageDoc
+  , helpDoc
+    -- * The bound variant (§5.1)
+  , BoundGhcDiagnostic (..)
+    -- * Reserved extension point (§24)
+  , TadkaConversionError
+    -- * Human-readable error rendering (§24's "render" requirement)
+  , renderDecodeError
+  , renderSourceBindingError
+  , renderSourceLookupError
+  ) where
+
+import Data.Text (Text)
+import qualified Data.Text as Text
+import Prettyprinter (Doc, pretty, vsep)
+import qualified Tadka
+
+import Tadka.GHCProtocol.Schema (unSchemaVersion)
+import Tadka.GHCProtocol.Span
+  ( SourceBindingError (..)
+  , SourceLookupError (..)
+  , SpanState (..)
+  )
+import Tadka.GHCProtocol.Types
+
+--------------------------------------------------------------------------------
+-- Message/help rendering (§12/§13's exact transformation, spec Phase 5.2).
+--
+-- GHC's message/hints arrays are read as ordered sequences of complete,
+-- independent lines -- not word-wrapped prose fragments to be joined,
+-- and not a set whose order carries no meaning (Phase 1.3's captured
+-- example: a single complete sentence as one array element). 'vsep'
+-- (vertical concatenation, one fragment per line, no wrapping/joining)
+-- is the only choice that doesn't fabricate structure: joining with a
+-- space or comma would assert an adjacency relationship the array's own
+-- boundaries don't claim.
+--------------------------------------------------------------------------------
+
+-- | Total over the empty-list case, which §12 explicitly requires the
+-- decoder to accept without complaint. Order preserved exactly; no
+-- separator invented beyond the layout engine's own line breaks.
+messageDoc :: [Text] -> Doc Tadka.Ann
+messageDoc []    = mempty
+messageDoc frags = vsep (map pretty frags)
+
+-- | 'Nothing' when there are no hints, distinguishing "no hints" from
+-- "hints present" at the type level rather than rendering an empty
+-- bulleted list (§13: nothing is discarded, there is simply nothing to
+-- render). Order preserved exactly, same fragment semantics as
+-- 'messageDoc'.
+helpDoc :: [Text] -> Maybe (Doc Tadka.Ann)
+helpDoc []    = Nothing
+helpDoc hints = Just (vsep (map (("\8226 " <>) . pretty) hints))
+
+--------------------------------------------------------------------------------
+-- GhcDiagnostic's Tadka.Diagnostic instance (§5.1).
+--------------------------------------------------------------------------------
+
+instance Tadka.Diagnostic GhcDiagnostic where
+  message d = messageDoc (ghcMessage d)
+
+  -- Total, exactly the two-case mapping §11 specifies. No Advice branch
+  -- exists to write, because GhcSeverity itself has only two
+  -- constructors.
+  severity d = case ghcSeverity d of
+    SevWarning -> Tadka.SevWarning
+    SevError   -> Tadka.SevError
+
+  help d = helpDoc (ghcHints d)
+
+  -- context, code, related, diagnosticId, diagnosticCause, url: all
+  -- deliberately omitted here, relying on Tadka.Diagnostic's own class
+  -- defaults (NoContext / Nothing / [] / Nothing / Nothing / Nothing).
+  -- This is not an oversight:
+  --   * context: no source binding has been attempted against a plain
+  --     GhcDiagnostic -- NoContext is honestly correct here. A caller
+  --     who has bound source uses BoundGhcDiagnostic below instead.
+  --   * code: §10's base-adapter rule -- never fabricate a Tadka
+  --     DiagnosticCode from GHC's numeric one. The original stays
+  --     reachable via ghcCode on the GhcDiagnostic value itself.
+  --   * related/diagnosticId/diagnosticCause: §21 -- GHC's JSON schemas
+  --     provide none of these, so none are invented.
+  --   * url: GHC's own JSON diagnostics carry no associated URL.
+
+--------------------------------------------------------------------------------
+-- BoundGhcDiagnostic: a GhcDiagnostic paired with the outcome of binding
+-- it against source material (§5.1, Phase 3's SpanState).
+--------------------------------------------------------------------------------
+
+data BoundGhcDiagnostic = BoundGhcDiagnostic
+  { boundDiagnostic :: GhcDiagnostic
+  , boundSpanState  :: SpanState
+  } deriving stock (Show)
+
+instance Tadka.Diagnostic BoundGhcDiagnostic where
+  message b  = Tadka.message (boundDiagnostic b)
+  severity b = Tadka.severity (boundDiagnostic b)
+  help b     = Tadka.help (boundDiagnostic b)
+
+  -- Total, one equation per SpanState constructor (compiler-checked
+  -- exhaustiveness -- SpanState gaining another constructor later, e.g.
+  -- a future SpanStale, is a compile error here until this case is
+  -- updated, not a silent NoContext by omission).
+  context b = case boundSpanState b of
+    SpanBound ctx               -> ctx
+    NoSpan                      -> Tadka.NoContext
+    SpanNoSource _               -> Tadka.NoContext
+    SpanSourceUnavailable _ _    -> Tadka.NoContext
+    SpanInvalidCoordinates _ _   -> Tadka.NoContext
+
+  -- code/related/diagnosticId/diagnosticCause/url: rely on the class
+  -- defaults, identical reasoning to GhcDiagnostic's instance above.
+
+--------------------------------------------------------------------------------
+-- Reserved extension point (§24): currently uninhabited, since this
+-- base adapter's projection is provably total -- no constructor exists
+-- to be thrown. An empty type is a stronger statement of "this cannot
+-- fail" than an Either whose Left is never constructed.
+--------------------------------------------------------------------------------
+
+data TadkaConversionError
+
+--------------------------------------------------------------------------------
+-- Human-readable error rendering (§24: never Show-derived text shown to
+-- end users -- Show output is for debugging, not for a rendered
+-- diagnostic).
+--------------------------------------------------------------------------------
+
+renderDecodeError :: DecodeError -> Text
+renderDecodeError e = case e of
+  DecodeMalformedJson msg ->
+    "malformed JSON: " <> msg
+  DecodeNotAnObject ->
+    "expected a JSON object at the top level"
+  DecodeMissingField sv field ->
+    "schema " <> unSchemaVersion sv <> ": missing required field \"" <> field <> "\""
+  DecodeFieldTypeMismatch sv field expected ->
+    "schema " <> unSchemaVersion sv <> ": field \"" <> field
+      <> "\" has the wrong type (expected " <> expected <> ")"
+  DecodeUnsupportedVersion sv ->
+    "unsupported diagnostics-as-json schema version: " <> unSchemaVersion sv
+  InvalidGhcVersion t ->
+    "invalid GHC version string: \"" <> t <> "\""
+  InvalidDiagnosticCode n ->
+    "invalid GHC diagnostic code: " <> Text.pack (show n)
+  UnrecognizedSeverity t ->
+    "unrecognized GHC severity: \"" <> t <> "\" (expected \"Warning\" or \"Error\")"
+  InvalidCoordinate reason n ->
+    reason <> Text.pack (show n)
+
+renderSourceBindingError :: SourceBindingError -> Text
+renderSourceBindingError e = case e of
+  InvalidCoordinates sp reason ->
+    "invalid coordinates in " <> Text.pack (show sp) <> ": " <> reason
+  TadkaSpanRejected sp err ->
+    "tadka rejected the span for " <> Text.pack (show sp) <> ": " <> Text.pack (show err)
+  TadkaSourceRejected sp err ->
+    "tadka rejected the source name for " <> Text.pack (show sp) <> ": " <> Text.pack (show err)
+  TadkaContextRejected sp err ->
+    "span out of bounds against real source for " <> Text.pack (show sp) <> ": " <> Text.pack (show err)
+
+-- | Kept for completeness alongside the two renderers above, though not
+-- currently called from anywhere in this module.
+renderSourceLookupError :: SourceLookupError -> Text
+renderSourceLookupError e = case e of
+  SourceIOError msg         -> "source lookup failed: " <> msg
+  SourceInvalidEncoding msg -> "source is not valid text: " <> msg

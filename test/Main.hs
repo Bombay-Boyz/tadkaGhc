@@ -1,16 +1,21 @@
 -- | Phase 1 (wire/schema dispatch), Phase 2 (semantic promotion,
--- decodeDiagnosticLine), and Phase 3 (coordinate conversion, source
--- binding) tests. Vision §31.1/§31.2/§31.3; spec Phase 9.1.
+-- decodeDiagnosticLine), Phase 3 (coordinate conversion, source
+-- binding), and Phase 5 (Tadka projection) tests. Vision §31.1-§31.3;
+-- spec Phase 9.1.
 module Main (main) where
 
 import qualified Data.ByteString as BS
 import Data.List.NonEmpty (NonEmpty ((:|)))
+import Data.Text (Text)
+import Prettyprinter (Doc, defaultLayoutOptions, layoutPretty)
+import Prettyprinter.Render.Text (renderStrict)
 import qualified Tadka
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
   (Assertion, assertBool, assertEqual, assertFailure, testCase)
 
 import Tadka.GHCProtocol.Decode
+import Tadka.GHCProtocol.Diagnostic
 import Tadka.GHCProtocol.Schema
 import Tadka.GHCProtocol.Span
 import Tadka.GHCProtocol.Types
@@ -28,6 +33,7 @@ tests = testGroup "tadka-ghc"
       ]
   , testGroup "Phase 2: semantic promotion" phase2Tests
   , testGroup "Phase 3: coordinate conversion / source binding" phase3Tests
+  , testGroup "Phase 5: Tadka projection" phase5Tests
   ]
 
 --------------------------------------------------------------------------------
@@ -53,6 +59,25 @@ assertLeft path = do
   case result of
     Left _  -> pure ()
     Right _ -> assertFailure (path <> " expected Left, got Right")
+
+-- | Render a Doc to plain Text at a wide layout, for assertions -- never
+-- pattern-matches on Doc's internal constructors (I-32's own discipline).
+renderDocText :: Doc ann -> Text
+renderDocText = renderStrict . layoutPretty defaultLayoutOptions
+
+-- | Builds a validated 'GhcSpan' from raw 1-based coordinates, failing
+-- the test (not the program) if the coordinates themselves are invalid.
+buildSpanIO :: FilePath -> Integer -> Integer -> Integer -> Integer -> IO GhcSpan
+buildSpanIO file sl sc el ec =
+  case do
+    l1 <- mkLine sl
+    c1 <- mkColumn sc
+    l2 <- mkLine el
+    c2 <- mkColumn ec
+    mkGhcSpan file l1 c1 l2 c2
+  of
+    Right sp -> pure sp
+    Left e   -> assertFailure ("buildSpanIO: " <> show e)
 
 --------------------------------------------------------------------------------
 -- Phase 1: schema 1.0
@@ -243,20 +268,6 @@ phase2Tests =
 -- Phase 3: coordinate conversion / source binding (§31.2, §18's table)
 --------------------------------------------------------------------------------
 
--- | Builds a validated 'GhcSpan' from raw 1-based coordinates, failing the
--- test (not the program) if the coordinates themselves are invalid.
-buildSpanIO :: FilePath -> Integer -> Integer -> Integer -> Integer -> IO GhcSpan
-buildSpanIO file sl sc el ec =
-  case do
-    l1 <- mkLine sl
-    c1 <- mkColumn sc
-    l2 <- mkLine el
-    c2 <- mkColumn ec
-    mkGhcSpan file l1 c1 l2 c2
-  of
-    Right sp -> pure sp
-    Left e   -> assertFailure ("buildSpanIO: " <> show e)
-
 phase3Tests :: [TestTree]
 phase3Tests =
   [ testCase "computeLineMetadata: two plain lines" $ do
@@ -326,14 +337,14 @@ phase3Tests =
         other -> assertFailure ("expected InvalidCoordinates, got " <> show other)
 
   , testCase "bindSpan: Nothing -> NoSpan" $ do
-      result <- bindSpan stubProviderUnused Nothing
+      result <- bindSpan (SourceProvider (\_ -> pure (Right Nothing))) Nothing
       case result of
         NoSpan -> pure ()
         other  -> assertFailure ("expected NoSpan, got " <> show other)
 
   , testCase "bindSpan: clean not-found -> SpanNoSource, not an error (§2/§18)" $ do
       sp <- buildSpanIO "Missing.hs" 1 1 1 2
-      result <- bindSpan (stubProvider (const (pure (Right Nothing)))) (Just sp)
+      result <- bindSpan (SourceProvider (\_ -> pure (Right Nothing))) (Just sp)
       case result of
         SpanNoSource _ -> pure ()
         other -> assertFailure ("expected SpanNoSource, got " <> show other)
@@ -341,15 +352,15 @@ phase3Tests =
   , testCase "bindSpan: genuine lookup failure -> SpanSourceUnavailable, distinct from not-found" $ do
       sp <- buildSpanIO "Foo.hs" 1 1 1 2
       let err = SourceIOError "permission denied"
-      result <- bindSpan (stubProvider (const (pure (Left err)))) (Just sp)
+      result <- bindSpan (SourceProvider (\_ -> pure (Left err))) (Just sp)
       case result of
         SpanSourceUnavailable _ e -> assertEqual "error" err e
         other -> assertFailure ("expected SpanSourceUnavailable, got " <> show other)
 
   , testCase "bindSpan: success -> SpanBound with a real Context" $ do
       sp <- buildSpanIO "Foo.hs" 1 5 1 6
-      let provide = const (pure (Right (Just (SourceText "let x = 1\n"))))
-      result <- bindSpan (stubProvider provide) (Just sp)
+      let provide = \_ -> pure (Right (Just (SourceText "let x = 1\n")))
+      result <- bindSpan (SourceProvider provide) (Just sp)
       case result of
         SpanBound ctx -> case Tadka.contextLabelStates ctx of
           [Tadka.LabelOk _] -> pure ()
@@ -362,6 +373,99 @@ phase3Tests =
         Right Nothing -> pure ()
         other -> assertFailure ("expected Right Nothing, got " <> show other)
   ]
-  where
-    stubProvider f = SourceProvider f
-    stubProviderUnused = SourceProvider (\_ -> pure (Right Nothing))
+
+--------------------------------------------------------------------------------
+-- Phase 5: Tadka projection (§31.3)
+--------------------------------------------------------------------------------
+
+phase5Tests :: [TestTree]
+phase5Tests =
+  [ testCase "Tadka.severity: Warning -> SevWarning" $ do
+      result <- decodeFixtureFull "test/fixtures/schema/1.0/minimal.json"
+      case result of
+        Right d -> assertEqual "severity" Tadka.SevWarning (Tadka.severity d)
+        Left e  -> assertFailure (show e)
+
+  , testCase "Tadka.severity: Error -> SevError" $ do
+      result <- decodeFixtureFull "test/fixtures/schema/1.0/maximal.json"
+      case result of
+        Right d -> assertEqual "severity" Tadka.SevError (Tadka.severity d)
+        Left e  -> assertFailure (show e)
+
+  , testCase "Tadka.code is always Nothing; ghcCode still preserves the real value (§10)" $ do
+      result <- decodeFixtureFull "test/fixtures/schema/1.0/maximal.json"
+      case result of
+        Right d -> do
+          assertEqual "Tadka.code" Nothing (Tadka.code d)
+          assertBool "ghcCode preserved" (ghcCode d /= Nothing)
+        Left e -> assertFailure (show e)
+
+  , testCase "no fabricated related/id (§21)" $ do
+      result <- decodeFixtureFull "test/fixtures/schema/1.0/minimal.json"
+      case result of
+        Right d -> do
+          assertEqual "related length" 0 (length (Tadka.related d))
+          assertEqual "diagnosticId" Nothing (Tadka.diagnosticId d)
+        Left e -> assertFailure (show e)
+
+  , testCase "GhcDiagnostic's own context is always NoContext" $ do
+      result <- decodeFixtureFull "test/fixtures/schema/1.0/maximal.json"
+      case result of
+        Right d -> case Tadka.context d of
+          Tadka.NoContext -> pure ()
+          _               -> assertFailure "expected NoContext for a plain GhcDiagnostic"
+        Left e -> assertFailure (show e)
+
+  , testCase "messageDoc: fragment order preserved, one line per fragment" $
+      assertEqual "rendered" "first\nsecond\nthird"
+        (renderDocText (messageDoc ["first", "second", "third"]))
+
+  , testCase "messageDoc: empty array renders to empty text (§12)" $
+      assertEqual "rendered" "" (renderDocText (messageDoc []))
+
+  , testCase "helpDoc: Nothing for empty hints" $
+      assertEqual "helpDoc" Nothing (fmap renderDocText (helpDoc []))
+
+  , testCase "helpDoc: order preserved" $
+      case helpDoc ["first hint", "second hint"] of
+        Nothing -> assertFailure "expected Just"
+        Just d  -> assertEqual "rendered" "\8226 first hint\n\8226 second hint" (renderDocText d)
+
+  , testCase "BoundGhcDiagnostic: context reflects SpanBound" $ do
+      result <- decodeFixtureFull "test/fixtures/schema/1.0/minimal.json"
+      case result of
+        Left e -> assertFailure (show e)
+        Right d -> do
+          sp <- buildSpanIO "Foo.hs" 1 5 1 6
+          case convertSpan (SourceText "let x = 1\n") sp of
+            Left err  -> assertFailure (show err)
+            Right ctx ->
+              case Tadka.context (BoundGhcDiagnostic d (SpanBound ctx)) of
+                Tadka.NoContext -> assertFailure "expected the bound context, not NoContext"
+                _               -> pure ()
+
+  , testCase "BoundGhcDiagnostic: NoSpan/SpanNoSource/etc. all degrade to NoContext" $ do
+      result <- decodeFixtureFull "test/fixtures/schema/1.0/minimal.json"
+      case result of
+        Left e -> assertFailure (show e)
+        Right d -> do
+          sp <- buildSpanIO "Foo.hs" 1 1 1 2
+          let states =
+                [ NoSpan
+                , SpanNoSource sp
+                , SpanSourceUnavailable sp (SourceIOError "boom")
+                , SpanInvalidCoordinates sp (InvalidCoordinates sp "bad")
+                ]
+          mapM_
+            (\st -> case Tadka.context (BoundGhcDiagnostic d st) of
+                Tadka.NoContext -> pure ()
+                _               -> assertFailure ("expected NoContext for " <> show st))
+            states
+
+  , testCase "renderDecodeError is total and human-readable, not Show-derived" $
+      assertBool "non-empty" (renderDecodeError DecodeNotAnObject /= "")
+
+  , testCase "renderSourceBindingError is total and human-readable" $ do
+      sp <- buildSpanIO "Foo.hs" 1 1 1 2
+      assertBool "non-empty" (renderSourceBindingError (InvalidCoordinates sp "x") /= "")
+  ]
