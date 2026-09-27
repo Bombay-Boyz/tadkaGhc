@@ -86,6 +86,8 @@ test-suite tadka-ghc-test
       base >=4 && <5
     , tadka-ghc
     , tadka-ghc-process
+    , bytestring
+    , text
     , tasty
     , tasty-hedgehog
     , hedgehog

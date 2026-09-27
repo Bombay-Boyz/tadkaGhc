@@ -26,6 +26,9 @@ module Tadka.GHCProtocol.Schema
   , RawReason (..)
   ) where
 
+import Control.Applicative ((<|>))
+import Data.Aeson (FromJSON (..), withObject)
+import Data.Aeson.Types ((.:))
 import Data.List.NonEmpty (NonEmpty)
 import Data.Text (Text)
 
@@ -163,3 +166,26 @@ data RawReason
   = RawReasonFlags (NonEmpty Text)
   | RawReasonCategory Text
   deriving stock (Eq, Show)
+
+--------------------------------------------------------------------------------
+-- FromJSON instances for the version-independent nested wire shapes.
+-- Kept here (not in Decode.hs) so they are not orphan instances (§12
+-- style rule's spirit, applied beyond just Tadka.Diagnostic instances).
+--------------------------------------------------------------------------------
+
+instance FromJSON RawPosition where
+  parseJSON = withObject "RawPosition" $ \o ->
+    RawPosition <$> o .: "line" <*> o .: "column"
+
+instance FromJSON RawSpan where
+  parseJSON = withObject "RawSpan" $ \o ->
+    RawSpan <$> o .: "file" <*> o .: "start" <*> o .: "end"
+
+-- | Total over the oneOf's two shapes: tries "flags" first, falls back to
+-- "category". A wire object satisfying neither shape fails via the
+-- underlying Parser's own Alternative failure, surfaced by the caller as
+-- a DecodeError, never as an uncaught pattern-match failure.
+instance FromJSON RawReason where
+  parseJSON = withObject "RawReason" $ \o ->
+        (RawReasonFlags    <$> o .: "flags")
+    <|> (RawReasonCategory <$> o .: "category")

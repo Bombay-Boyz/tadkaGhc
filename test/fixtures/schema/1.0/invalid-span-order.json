@@ -1,0 +1,1 @@
+{"version":"1.0","ghcVersion":"9.10.1","span":{"file":"Foo.hs","start":{"line":5,"column":10},"end":{"line":5,"column":3}},"severity":"Error","code":1,"message":["end precedes start"],"hints":[]}

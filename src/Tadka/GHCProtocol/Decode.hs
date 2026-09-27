@@ -1,51 +1,182 @@
--- | Wire decoding (vision §22, §25; spec Phase 1.4, Phase 2.7, Phase 8).
+-- | Wire decoding and promotion into the stable semantic type (vision
+-- §22, §25; spec Phase 1.4, Phase 2.6-2.7, Phase 8).
 --
--- NOTE: 'DecodeError' here carries only the constructors Phase 1 needs to
--- compile. Phase 4 (Error Algebra) extends this same type with the full
--- constructor set (DecodeMissingField/DecodeFieldTypeMismatch/etc. with
--- structured JsonPath, per I-26) -- edit this file in place then, don't
--- create a second DecodeError elsewhere.
+-- 'DecodeError' is defined in 'Tadka.GHCProtocol.Types' (see that
+-- module's Haddock for why) and re-exported here so callers importing
+-- Decode.hs see it as before.
 module Tadka.GHCProtocol.Decode
   ( DecodeError (..)
+  , decodeSomeRawDiagnostic
   , decodeRawByVersion
   , parseFieldsV1_0
   , parseFieldsV1_1
   , parseFieldsV1_2
+  , promote
+  , promoteV1_0
+  , promoteV1_1
+  , promoteV1_2
+  , decodeDiagnosticLine
   ) where
 
-import Data.Aeson (Object)
-import Data.Text (Text)
+import Data.Aeson (Value (..), eitherDecodeStrict)
+import Data.Aeson.Types (Object, Parser, parseEither, (.:), (.:?))
+import Data.ByteString (ByteString)
+import qualified Data.Text as Text
 
 import Tadka.GHCProtocol.Schema
+import Tadka.GHCProtocol.Types
 
--- | Placeholder for Phase 1; superseded (same type, more constructors,
--- same module) by Phase 4.
-data DecodeError
-  = DecodeMalformedJson Text
-  | DecodeNotAnObject
-  | DecodeMissingField SchemaVersion Text
-  | DecodeFieldTypeMismatch SchemaVersion Text Text
-  | DecodeUnsupportedVersion SchemaVersion
-  deriving stock (Eq, Show)
+mapLeft :: (a -> c) -> Either a b -> Either c b
+mapLeft f (Left a)  = Left (f a)
+mapLeft _ (Right b) = Right b
 
--- | Total per case: exactly one Aeson object-parser per known version,
--- selected by the exhaustively-checked witness (spec Phase 1.4).
+--------------------------------------------------------------------------------
+-- Per-version field parsers (spec Phase 1.4).
+--------------------------------------------------------------------------------
+
+parseFieldsV1_0 :: Object -> Either DecodeError RawFieldsV1_0
+parseFieldsV1_0 obj = mapLeft (DecodeFieldTypeMismatch (mkSchemaVersion "1.0") "?" . Text.pack)
+  (parseEither parser obj)
+  where
+    parser :: Object -> Parser RawFieldsV1_0
+    parser o = RawFieldsV1_0
+      <$> o .:  "ghcVersion"
+      <*> o .:? "span"
+      <*> o .:  "severity"
+      <*> o .:? "code"
+      <*> o .:  "message"
+      <*> o .:  "hints"
+
+parseFieldsV1_1 :: Object -> Either DecodeError RawFieldsV1_1
+parseFieldsV1_1 obj = mapLeft (DecodeFieldTypeMismatch (mkSchemaVersion "1.1") "?" . Text.pack)
+  (parseEither parser obj)
+  where
+    parser :: Object -> Parser RawFieldsV1_1
+    parser o = RawFieldsV1_1
+      <$> o .:  "ghcVersion"
+      <*> o .:? "span"
+      <*> o .:  "severity"
+      <*> o .:? "code"
+      <*> o .:  "message"
+      <*> o .:  "hints"
+      <*> o .:? "reason"
+
+parseFieldsV1_2 :: Object -> Either DecodeError RawFieldsV1_2
+parseFieldsV1_2 obj = mapLeft (DecodeFieldTypeMismatch (mkSchemaVersion "1.2") "?" . Text.pack)
+  (parseEither parser obj)
+  where
+    parser :: Object -> Parser RawFieldsV1_2
+    parser o = RawFieldsV1_2
+      <$> o .:  "ghcVersion"
+      <*> o .:? "span"
+      <*> o .:  "severity"
+      <*> o .:? "code"
+      <*> o .:  "message"
+      <*> o .:  "hints"
+      <*> o .:? "reason"
+      <*> o .:? "rendered"
+
 decodeRawByVersion
   :: SKnownSchemaVersion v -> Object -> Either DecodeError (RawDiagnostic v)
 decodeRawByVersion SV1_0 obj = RawDiagnosticV1_0 <$> parseFieldsV1_0 obj
 decodeRawByVersion SV1_1 obj = RawDiagnosticV1_1 <$> parseFieldsV1_1 obj
 decodeRawByVersion SV1_2 obj = RawDiagnosticV1_2 <$> parseFieldsV1_2 obj
 
--- TODO(Phase 1, continued): implement these against Aeson's Object using
--- (.:)/(.:?) converted to Either via Data.Aeson.Types.parseEither, per
--- the confirmed field set in Schema.hs's Haddock (Phase 1.3). Left as
--- stubs here so the module graph and GADT dispatch compile end-to-end
--- before the parsing logic itself is filled in.
-parseFieldsV1_0 :: Object -> Either DecodeError RawFieldsV1_0
-parseFieldsV1_0 = error "TODO Phase 1: parseFieldsV1_0"
+--------------------------------------------------------------------------------
+-- Wire-layer pipeline: JSON bytes -> version dispatch -> RawDiagnostic.
+--------------------------------------------------------------------------------
 
-parseFieldsV1_1 :: Object -> Either DecodeError RawFieldsV1_1
-parseFieldsV1_1 = error "TODO Phase 1: parseFieldsV1_1"
+expectObject :: Value -> Either DecodeError Object
+expectObject (Object o) = Right o
+expectObject _          = Left DecodeNotAnObject
 
-parseFieldsV1_2 :: Object -> Either DecodeError RawFieldsV1_2
-parseFieldsV1_2 = error "TODO Phase 1: parseFieldsV1_2"
+extractSchemaVersionField :: Object -> Either DecodeError SchemaVersion
+extractSchemaVersionField obj =
+  case parseEither (\o -> o .: "version") obj of
+    Left _  -> Left (DecodeMissingField (mkSchemaVersion "?") "version")
+    Right t -> Right (mkSchemaVersion t)
+
+decodeSomeRawDiagnostic :: ByteString -> Either DecodeError SomeRawDiagnostic
+decodeSomeRawDiagnostic bs = do
+  value <- mapLeft (DecodeMalformedJson . Text.pack)
+             (eitherDecodeStrict bs :: Either String Value)
+  obj   <- expectObject value
+  rawSv <- extractSchemaVersionField obj
+  case classifySchemaVersion rawSv of
+    Left (UnsupportedSchemaVersion sv) -> Left (DecodeUnsupportedVersion sv)
+    Right (SomeSKnownSchemaVersion sv) -> SomeRawDiagnostic sv <$> decodeRawByVersion sv obj
+
+--------------------------------------------------------------------------------
+-- Promotion into the stable semantic type (spec Phase 2.6).
+--------------------------------------------------------------------------------
+
+-- | Total per case, one clause per 'RawDiagnostic' constructor --
+-- exhaustively checked because 'RawDiagnostic' is a GADT indexed by a
+-- closed kind.
+promote :: SomeRawDiagnostic -> Either DecodeError GhcDiagnostic
+promote (SomeRawDiagnostic SV1_0 (RawDiagnosticV1_0 f)) = promoteV1_0 f
+promote (SomeRawDiagnostic SV1_1 (RawDiagnosticV1_1 f)) = promoteV1_1 f
+promote (SomeRawDiagnostic SV1_2 (RawDiagnosticV1_2 f)) = promoteV1_2 f
+
+-- | ghcReason/ghcRendered are Nothing by schema 1.0's own absence of the
+-- field, not by a wire-level Maybe collapsing "absent" and
+-- "present-but-null" into one case -- there is no rf10Reason field to
+-- read at all.
+promoteV1_0 :: RawFieldsV1_0 -> Either DecodeError GhcDiagnostic
+promoteV1_0 f = do
+  ver   <- mkGhcVersion (rf10Version f)
+  sev   <- mkGhcSeverity (rf10Severity f)
+  code  <- traverse mkGhcDiagnosticCode (rf10Code f)
+  span_ <- traverse promoteSpan (rf10Span f)
+  pure GhcDiagnostic
+    { ghcVersion  = ver
+    , ghcSpan     = span_
+    , ghcSeverity = sev
+    , ghcCode     = code
+    , ghcMessage  = rf10Message f
+    , ghcHints    = rf10Hints f
+    , ghcReason   = Nothing
+    , ghcRendered = Nothing
+    }
+
+-- | ghcReason can be non-Nothing here (rf11Reason); ghcRendered stays
+-- Nothing, since schema 1.1 has no rendered field.
+promoteV1_1 :: RawFieldsV1_1 -> Either DecodeError GhcDiagnostic
+promoteV1_1 f = do
+  ver   <- mkGhcVersion (rf11Version f)
+  sev   <- mkGhcSeverity (rf11Severity f)
+  code  <- traverse mkGhcDiagnosticCode (rf11Code f)
+  span_ <- traverse promoteSpan (rf11Span f)
+  pure GhcDiagnostic
+    { ghcVersion  = ver
+    , ghcSpan     = span_
+    , ghcSeverity = sev
+    , ghcCode     = code
+    , ghcMessage  = rf11Message f
+    , ghcHints    = rf11Hints f
+    , ghcReason   = promoteReason <$> rf11Reason f
+    , ghcRendered = Nothing
+    }
+
+-- | Both ghcReason and ghcRendered can be non-Nothing here.
+promoteV1_2 :: RawFieldsV1_2 -> Either DecodeError GhcDiagnostic
+promoteV1_2 f = do
+  ver   <- mkGhcVersion (rf12Version f)
+  sev   <- mkGhcSeverity (rf12Severity f)
+  code  <- traverse mkGhcDiagnosticCode (rf12Code f)
+  span_ <- traverse promoteSpan (rf12Span f)
+  pure GhcDiagnostic
+    { ghcVersion  = ver
+    , ghcSpan     = span_
+    , ghcSeverity = sev
+    , ghcCode     = code
+    , ghcMessage  = rf12Message f
+    , ghcHints    = rf12Hints f
+    , ghcReason   = promoteReason <$> rf12Reason f
+    , ghcRendered = RenderedDiagnostic <$> rf12Rendered f
+    }
+
+-- | The normative primitive (§22, §33): deliberately independent of file
+-- I/O, process management, streaming frameworks, and Tadka rendering.
+decodeDiagnosticLine :: ByteString -> Either DecodeError GhcDiagnostic
+decodeDiagnosticLine bs = decodeSomeRawDiagnostic bs >>= promote
