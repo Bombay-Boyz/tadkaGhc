@@ -5,6 +5,14 @@
 module Main (main) where
 
 import qualified Data.ByteString as BS
+import Test.Tasty.Golden (goldenVsString)
+import System.FilePath ((</>))
+import System.Directory (createDirectoryIfMissing, getTemporaryDirectory, removePathForcibly)
+import Data.Functor.Identity (runIdentity)
+import Data.Foldable (toList)
+import Data.Aeson (Value (Number, String), eitherDecodeStrict)
+import qualified Data.ByteString.Char8 as BSC
+import qualified Data.ByteString.Lazy as BL
 import System.Exit (ExitCode (ExitFailure))
 import Data.List.NonEmpty (NonEmpty ((:|)))
 import Data.Text (Text)
@@ -16,7 +24,7 @@ import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
   (Assertion, assertBool, assertEqual, assertFailure, testCase)
 
-import Data.Text.Encoding (encodeUtf8)
+import Data.Text.Encoding (decodeUtf8Lenient, encodeUtf8)
 import Hedgehog (Gen, Property, failure, forAll, property, (===))
 import qualified Hedgehog.Gen as Gen
 import qualified Hedgehog.Range as Range
@@ -27,7 +35,7 @@ import Tadka.GHCProtocol.Decode
 import Tadka.GHCProtocol.Diagnostic
 import Tadka.GHCProtocol.Opaque
 import Tadka.GHCProtocol.Process
-import Tadka.GHCProtocol.Runner (BuildRunner (..))
+import Tadka.GHCProtocol.Runner (BuildRunner (..), runBuild)
 import Tadka.GHCProtocol.Schema
 import Tadka.GHCProtocol.Span
 import Tadka.GHCProtocol.Types
@@ -50,6 +58,11 @@ tests = testGroup "tadka-ghc"
   , testGroup "Phase 7: opaque output capture" phase7Tests
   , testGroup "Phase 8: pure stream semantics" phase8Tests
   , testGroup "Phase 9: properties and deterministic build testing" phase9Tests
+  , testGroup "Phase 2.7: decoding modes" decodingModeTests
+  , testGroup "Phase 9: golden rendering" goldenTests
+  , testGroup "Phase 9: coordinate fixtures" (map coordinateFixtureTest coordinateFixtureNames)
+  , testGroup "Phase 9: additional properties" extraPropertyTests
+  , testGroup "real-subprocess" realSubprocessTests
   ]
 
 --------------------------------------------------------------------------------
@@ -85,13 +98,7 @@ renderDocText = renderStrict . layoutPretty defaultLayoutOptions
 -- the test (not the program) if the coordinates themselves are invalid.
 buildSpanIO :: FilePath -> Integer -> Integer -> Integer -> Integer -> IO GhcSpan
 buildSpanIO file sl sc el ec =
-  case do
-    l1 <- mkLine sl
-    c1 <- mkColumn sc
-    l2 <- mkLine el
-    c2 <- mkColumn ec
-    mkGhcSpan file l1 c1 l2 c2
-  of
+  case buildSpan file sl sc el ec of
     Right sp -> pure sp
     Left e   -> assertFailure ("buildSpanIO: " <> show e)
 
@@ -838,4 +845,288 @@ phase9Tests =
           fakeRunner = BuildRunner (\_ _ _ _ -> pure fakeResult)
       result <- execute fakeRunner Nothing Cabal "." []
       assertEqual "fake result returned unchanged" fakeResult result
+  ]
+
+
+--------------------------------------------------------------------------------
+-- Shared span builder (pure; buildSpanIO wraps it for HUnit)
+--------------------------------------------------------------------------------
+
+buildSpan :: FilePath -> Integer -> Integer -> Integer -> Integer -> Either DecodeError GhcSpan
+buildSpan file sl sc el ec = do
+  l1 <- mkLine sl
+  c1 <- mkColumn sc
+  l2 <- mkLine el
+  c2 <- mkColumn ec
+  mkGhcSpan file l1 c1 l2 c2
+
+--------------------------------------------------------------------------------
+-- Phase 2.7: Strict vs ForwardCompatible (§25)
+--------------------------------------------------------------------------------
+
+decodingModeTests :: [TestTree]
+decodingModeTests =
+  [ testCase "Strict rejects unknown fields on every schema version, reporting the first key in sorted order" $
+      mapM_
+        (\v -> do
+            bs <- BS.readFile ("test/fixtures/schema/" <> v <> "/unknown-fields.json")
+            case decodeDiagnosticLineWith Strict bs of
+              Left (DecodeUnknownField _ f) -> assertEqual ("field @" <> v) "anotherOne" f
+              other -> assertFailure ("expected DecodeUnknownField for " <> v <> ", got " <> show other))
+        ["1.0", "1.1", "1.2"]
+
+  , testCase "ForwardCompatible accepts them and reports each key with its raw value, sorted by key" $ do
+      bs <- BS.readFile "test/fixtures/schema/1.0/unknown-fields.json"
+      case decodeDiagnosticLineWith ForwardCompatible bs of
+        Right (_, ws) -> do
+          assertEqual "names"  ["anotherOne", "extraField"] [k | UnknownField k _ <- ws]
+          assertEqual "values" [Number 42, String "surprise"] [v | UnknownField _ v <- ws]
+        Left e -> assertFailure (show e)
+
+  , testCase "Strict accepts a fixture with no unknown fields, with no warnings" $ do
+      bs <- BS.readFile "test/fixtures/schema/1.2/optional-rendered.json"
+      case decodeDiagnosticLineWith Strict bs of
+        Right (_, ws) -> assertEqual "warnings" [] ws
+        Left e        -> assertFailure (show e)
+
+  , testCase "decodeDiagnosticLine keeps its forward-compatible contract" $ do
+      bs <- BS.readFile "test/fixtures/schema/1.1/unknown-fields.json"
+      either (assertFailure . show) (const (pure ())) (decodeDiagnosticLine bs)
+
+  , testCase "an unsupported version fails in BOTH modes, never silently reinterpreted" $ do
+      bs <- BS.readFile "test/fixtures/schema/unsupported/version-1.3.json"
+      mapM_
+        (\m -> case decodeDiagnosticLineWith m bs of
+            Left (DecodeUnsupportedVersion _) -> pure ()
+            other -> assertFailure ("expected DecodeUnsupportedVersion, got " <> show other))
+        [Strict, ForwardCompatible]
+  ]
+
+--------------------------------------------------------------------------------
+-- Golden rendering (§9.1 render/*, I-24, I-27)
+--------------------------------------------------------------------------------
+
+goldenText :: String -> FilePath -> Text -> TestTree
+goldenText name path txt = goldenVsString name path (pure (BL.fromStrict (encodeUtf8 txt)))
+
+-- | Renders through tadka's real narratable renderer (prose, plain Text
+-- output), so an empty-message diagnostic is checked end-to-end rather
+-- than only at the messageDoc level.
+renderNarratableText :: Tadka.Diagnostic e => e -> Either String Text
+renderNarratableText e =
+  case Tadka.selectRenderer (Tadka.withTarget Tadka.TNarratable Tadka.defaultConfig) of
+    Tadka.SomeRenderer r@(Tadka.Narratable _) -> Right (Tadka.render r e)
+    Tadka.SomeRenderer _ -> Left "selectRenderer did not return the narratable renderer"
+
+emptyMessageGolden :: String -> TestTree
+emptyMessageGolden ver =
+  goldenVsString
+    ("empty-message diagnostic renders end-to-end (" <> ver <> ")")
+    ("test/fixtures/render/empty-message-diagnostic/" <> ver <> ".golden")
+    (do result <- decodeFixtureFull ("test/fixtures/schema/" <> ver <> "/empty-message.json")
+        case result of
+          Left e  -> assertFailure (show e)
+          Right d -> case renderNarratableText d of
+            Left msg -> assertFailure msg
+            Right t  -> pure (BL.fromStrict (encodeUtf8 t)))
+
+goldenTests :: [TestTree]
+goldenTests =
+  [ goldenText "messageDoc: one fragment"   "test/fixtures/render/message/one-fragment.golden"
+      (renderDocText (messageDoc ["Variable not in scope: a"]))
+  , goldenText "messageDoc: multi fragment" "test/fixtures/render/message/multi-fragment.golden"
+      (renderDocText (messageDoc ["first", "second", "third"]))
+  , goldenText "messageDoc: empty"          "test/fixtures/render/message/empty.golden"
+      (renderDocText (messageDoc []))
+  , goldenText "helpDoc: one hint"          "test/fixtures/render/help/one-hint.golden"
+      (maybe "<none>" renderDocText (helpDoc ["Add a type signature"]))
+  , goldenText "helpDoc: multi hint"        "test/fixtures/render/help/multi-hint.golden"
+      (maybe "<none>" renderDocText (helpDoc ["first hint", "second hint"]))
+  , goldenText "helpDoc: empty is absence, not an empty block" "test/fixtures/render/help/empty.golden"
+      (maybe "<none>" renderDocText (helpDoc []))
+  , emptyMessageGolden "1.0"
+  , emptyMessageGolden "1.1"
+  , emptyMessageGolden "1.2"
+  , testCase "an empty-message diagnostic bound to a real span still renders severity AND location" $ do
+      result <- decodeFixtureFull "test/fixtures/schema/1.0/empty-message.json"
+      d   <- either (assertFailure . show) pure result
+      sp  <- buildSpanIO "Foo.hs" 1 5 1 6
+      ctx <- either (assertFailure . show) pure (convertSpan (SourceText "let x = 1\n") sp)
+      case renderNarratableText (BoundGhcDiagnostic d (SpanBound ctx)) of
+        Left msg -> assertFailure msg
+        Right t  -> do
+          assertBool "severity present" ("Warning," `Text.isInfixOf` t)
+          assertBool "location present" ("Foo.hs" `Text.isInfixOf` t)
+  ]
+
+--------------------------------------------------------------------------------
+-- File-driven coordinate fixtures (§9.1, §31.2)
+--------------------------------------------------------------------------------
+
+coordinateFixtureNames :: [String]
+coordinateFixtureNames =
+  [ "first-char", "same-line", "multi-line", "eol", "final-char", "empty-span"
+  , "unicode", "crlf", "tabs", "invalid", "out-of-range" ]
+
+coordinateFixtureTest :: String -> TestTree
+coordinateFixtureTest name = testCase ("coordinate fixture: " <> name) $ do
+  let dir = "test/fixtures/coordinate/" <> name
+  srcBytes      <- BS.readFile (dir <> "/source.txt")
+  spanBytes     <- BS.readFile (dir <> "/span.json")
+  expectedBytes <- BS.readFile (dir <> "/expected.txt")
+  rawSpan <- either (assertFailure . ("bad span.json: " <>)) pure (eitherDecodeStrict spanBytes)
+  let src      = decodeUtf8Lenient srcBytes
+      expected = Text.strip (decodeUtf8Lenient expectedBytes)
+      meta     = computeLineMetadata src
+      showOff  = Text.pack . show :: Int -> Text
+  case promoteSpan rawSpan of
+    Left _   -> assertEqual "offsets" expected "ERR"
+    Right gs ->
+      case ( coordinateToOffset meta (spanStartLine gs) (spanStartCol gs)
+           , coordinateToOffset meta (spanEndLine gs)   (spanEndCol gs) ) of
+        (Right s, Right e) -> do
+          assertEqual "offsets" expected ("OK " <> showOff s <> " " <> showOff e)
+          either (assertFailure . show) (const (pure ())) (convertSpan (SourceText src) gs)
+        _ -> do
+          assertEqual "offsets" expected "ERR"
+          case convertSpan (SourceText src) gs of
+            Left _  -> pure ()
+            Right _ -> assertFailure "convertSpan accepted coordinates coordinateToOffset rejected"
+
+--------------------------------------------------------------------------------
+-- Additional properties: Phase 3, 6, 8 definitions of done, and I-28
+--------------------------------------------------------------------------------
+
+genSpan :: Gen GhcSpan
+genSpan = do
+  file <- Gen.element ["Foo.hs", "src/Bar.hs", "<interactive>"]
+  sl <- Gen.integral (Range.linear 1 4)
+  sc <- Gen.integral (Range.linear 1 6)
+  el <- Gen.integral (Range.linear sl 4)
+  ec <- Gen.integral (Range.linear 1 6)
+  case buildSpan file sl sc el ec of
+    Right s -> pure s
+    Left _  -> Gen.discard
+
+genLookup :: Gen (Either SourceLookupError (Maybe SourceText))
+genLookup = Gen.choice
+  [ Left . SourceIOError <$> genSafeText
+  , pure (Right Nothing)
+  , Right . Just . SourceText . Text.intercalate "\n"
+      <$> Gen.list (Range.linear 1 4) (Gen.text (Range.linear 0 6) Gen.alpha)
+  ]
+
+stateMatches :: Maybe GhcSpan -> Either SourceLookupError (Maybe SourceText) -> SpanState -> Bool
+stateMatches Nothing  _                 NoSpan                       = True
+stateMatches (Just _) (Left e)          (SpanSourceUnavailable _ e') = e == e'
+stateMatches (Just _) (Right Nothing)   (SpanNoSource _)             = True
+stateMatches (Just _) (Right (Just _))  (SpanBound _)                = True
+stateMatches (Just _) (Right (Just _))  (SpanInvalidCoordinates _ _) = True
+stateMatches _        _                 _                            = False
+
+prop_bindSpan_total_and_classifies :: Property
+prop_bindSpan_total_and_classifies = property $ do
+  mSpan   <- forAll (Gen.maybe genSpan)
+  outcome <- forAll genLookup
+  let st = runIdentity (bindSpan (SourceProvider (\_ -> pure outcome)) mSpan)
+  stateMatches mSpan outcome st === True
+
+prop_bindSpan_uses_only_provided_provider :: Property
+prop_bindSpan_uses_only_provided_provider = property $ do
+  sp <- forAll genSpan
+  let provider = SourceProvider (\p -> pure (Left (SourceIOError (Text.pack p))))
+  case runIdentity (bindSpan provider (Just sp)) of
+    SpanSourceUnavailable _ (SourceIOError t) -> t === Text.pack (spanFile sp)
+    _ -> failure
+
+prop_crlf_matches_lf_line_content :: Property
+prop_crlf_matches_lf_line_content = property $ do
+  ls <- forAll (Gen.list (Range.linear 1 6) (Gen.text (Range.linear 0 8) Gen.alpha))
+  let lf   = computeLineMetadata (Text.intercalate "\n" ls)
+      crlf = computeLineMetadata (Text.intercalate "\r\n" ls)
+  map lineContentLength (toList crlf) === map lineContentLength (toList lf)
+
+prop_feedChunk_split_invariant :: Property
+prop_feedChunk_split_invariant = property $ do
+  s <- forAll (BSC.pack <$> Gen.list (Range.linear 0 30) (Gen.element ['a', 'b', '\n']))
+  i <- forAll (Gen.int (Range.linear 0 (BS.length s)))
+  let (a, b)    = BS.splitAt i s
+      (st1, l1) = feedChunk emptyFramerState a
+      (st2, l2) = feedChunk st1 b
+      (stW, lW) = feedChunk emptyFramerState s
+  (l1 <> l2 <> flushFramer st2) === (lW <> flushFramer stW)
+
+prop_stream_length_matches_nonblank :: Property
+prop_stream_length_matches_nonblank = property $ do
+  lns <- forAll (Gen.list (Range.linear 0 10) (Gen.element [validDiagLine, "", "garbage"]))
+  length (decodeDiagnosticStream lns) === length (filter (not . BS.null) lns)
+
+prop_ghcCode_preserved_through_projection :: Property
+prop_ghcCode_preserved_through_projection = property $ do
+  n <- forAll (Gen.integral (Range.linear 0 (999999 :: Integer)))
+  let line = encodeUtf8
+        ( "{\"version\":\"1.0\",\"ghcVersion\":\"9.10.1\",\"span\":null,\"severity\":\"Warning\",\"code\":"
+        <> Text.pack (show n) <> ",\"message\":[],\"hints\":[]}" )
+  case (decodeDiagnosticLine line, mkGhcDiagnosticCode n) of
+    (Right d, Right c) -> do
+      ghcCode d === Just c       -- never lost from GhcDiagnostic
+      Tadka.code d === Nothing   -- never fabricated into a Tadka code
+    _ -> failure
+
+extraPropertyTests :: [TestTree]
+extraPropertyTests =
+  [ testProperty "bindSpan is total and classifies every input" prop_bindSpan_total_and_classifies
+  , testProperty "bindSpan uses only the provider it is given, with the span's own path"
+      prop_bindSpan_uses_only_provided_provider
+  , testProperty "CRLF and LF sources have identical per-line content lengths"
+      prop_crlf_matches_lf_line_content
+  , testProperty "feedChunk: any split point reconstructs the same lines" prop_feedChunk_split_invariant
+  , testProperty "decodeDiagnosticStream yields exactly one result per non-blank line"
+      prop_stream_length_matches_nonblank
+  , testProperty "GHC code stays on GhcDiagnostic while Tadka.code stays Nothing (I-28)"
+      prop_ghcCode_preserved_through_projection
+  , testCase "computeLineMetadata handles a 100k-line source (linear, not quadratic)" $
+      assertEqual "line count" 100001 (length (computeLineMetadata (Text.replicate 100000 "ab\n")))
+  ]
+
+--------------------------------------------------------------------------------
+-- Real subprocess integration (spec §9.4). The group name "real-subprocess"
+-- is what ci.yml's --pattern filters on. Needs cabal + GHC on PATH.
+--------------------------------------------------------------------------------
+
+realSubprocessTests :: [TestTree]
+realSubprocessTests =
+  [ testCase "runBuild + classifyBuildOutput against a real cabal/GHC build with a type error" $ do
+      tmp <- getTemporaryDirectory
+      let dir = tmp </> "tadka-ghc-real-subprocess-scratch"
+      removePathForcibly dir
+      createDirectoryIfMissing True dir
+      writeFile (dir </> "scratch.cabal") $ unlines
+        [ "cabal-version: 3.0"
+        , "name: scratch"
+        , "version: 0.1.0.0"
+        , "build-type: Simple"
+        , ""
+        , "executable scratch"
+        , "  main-is: Main.hs"
+        , "  build-depends: base"
+        , "  default-language: Haskell2010"
+        ]
+      writeFile (dir </> "cabal.project") "packages: .\n"
+      writeFile (dir </> "Main.hs") $ unlines
+        [ "module Main (main) where"
+        , "main :: IO ()"
+        , "main = putStrLn (1 :: Int)"   -- deliberate type error
+        ]
+      result <- runBuild (Just 600) Cabal dir (injectDiagnosticsFlag Cabal [])
+      let outcome = classifyBuildOutput result
+          diags   = [d | ClassifiedDiagnostic d <- buildClassifications outcome]
+          opaque  = [opaqueText o | ClassifiedOpaque o <- buildClassifications outcome]
+      case buildCompilerResult outcome of
+        CompilerFailed _ -> pure ()
+        other -> assertFailure ("expected CompilerFailed, got " <> show other)
+      assertBool
+        ("expected at least one decoded GHC diagnostic; opaque records were: " <> show opaque)
+        (not (null diags))
+      assertBool "expected an error-severity diagnostic" (any ((== SevError) . ghcSeverity) diags)
   ]

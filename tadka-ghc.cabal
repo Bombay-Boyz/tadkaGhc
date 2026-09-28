@@ -95,6 +95,9 @@ test-suite tadka-ghc-test
     , hedgehog
     , tasty-golden
     , tasty-hunit
+    , aeson
+    , directory
+    , filepath
     , tadka
     , prettyprinter
   default-language: Haskell2010

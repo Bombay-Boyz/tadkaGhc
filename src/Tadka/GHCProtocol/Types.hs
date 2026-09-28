@@ -66,6 +66,7 @@ data DecodeError
   | DecodeMissingField SchemaVersion Text
   | DecodeFieldTypeMismatch SchemaVersion Text Text
   | DecodeUnsupportedVersion SchemaVersion
+  | DecodeUnknownField SchemaVersion Text
   | InvalidGhcVersion Text
   | InvalidDiagnosticCode Integer
   | UnrecognizedSeverity Text

@@ -159,6 +159,8 @@ renderDecodeError e = case e of
       <> "\" has the wrong type (expected " <> expected <> ")"
   DecodeUnsupportedVersion sv ->
     "unsupported diagnostics-as-json schema version: " <> unSchemaVersion sv
+  DecodeUnknownField sv field ->
+    "schema " <> unSchemaVersion sv <> ": unknown field \"" <> field <> "\" (rejected in strict mode)"
   InvalidGhcVersion t ->
     "invalid GHC version string: \"" <> t <> "\""
   InvalidDiagnosticCode n ->

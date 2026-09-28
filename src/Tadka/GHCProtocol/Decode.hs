@@ -15,6 +15,9 @@ module Tadka.GHCProtocol.Decode
   , promoteV1_0
   , promoteV1_1
   , promoteV1_2
+  , DecodingMode (..)
+  , DecodeWarning (..)
+  , decodeDiagnosticLineWith
   , decodeDiagnosticLine
   , decodeDiagnosticStream
   ) where
@@ -25,6 +28,10 @@ import Data.Maybe (mapMaybe)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import qualified Data.Text as Text
+import Data.Text (Text)
+import Data.List (sortOn)
+import qualified Data.Aeson.Key as Key
+import qualified Data.Aeson.KeyMap as KM
 
 import Tadka.GHCProtocol.Schema
 import Tadka.GHCProtocol.Types
@@ -101,10 +108,7 @@ extractSchemaVersionField obj =
 
 decodeSomeRawDiagnostic :: ByteString -> Either DecodeError SomeRawDiagnostic
 decodeSomeRawDiagnostic bs = do
-  value <- mapLeft (DecodeMalformedJson . Text.pack)
-             (eitherDecodeStrict bs :: Either String Value)
-  obj   <- expectObject value
-  rawSv <- extractSchemaVersionField obj
+  (obj, rawSv) <- parseVersionedObject bs
   case classifySchemaVersion rawSv of
     Left (UnsupportedSchemaVersion sv) -> Left (DecodeUnsupportedVersion sv)
     Right (SomeSKnownSchemaVersion sv) -> SomeRawDiagnostic sv <$> decodeRawByVersion sv obj
@@ -182,7 +186,7 @@ promoteV1_2 f = do
 -- | The normative primitive (§22, §33): deliberately independent of file
 -- I/O, process management, streaming frameworks, and Tadka rendering.
 decodeDiagnosticLine :: ByteString -> Either DecodeError GhcDiagnostic
-decodeDiagnosticLine bs = decodeSomeRawDiagnostic bs >>= promote
+decodeDiagnosticLine bs = fst <$> decodeDiagnosticLineWith ForwardCompatible bs
 
 --------------------------------------------------------------------------------
 -- Stream semantics over a stream KNOWN to be GHC diagnostic JSON Lines
@@ -213,3 +217,69 @@ decodeDiagnosticStream = mapMaybe decodeNonBlank . map stripTrailingCR
     decodeNonBlank bs
       | BS.null bs = Nothing
       | otherwise  = Just (decodeDiagnosticLine bs)
+
+--------------------------------------------------------------------------------
+-- Decoding modes (vision §25; spec Phase 2.7).
+--------------------------------------------------------------------------------
+
+-- | 'Strict' rejects any top-level key outside the matched schema
+-- version's recognised set (conformance testing); 'ForwardCompatible'
+-- (the production default) accepts them and reports each one.
+data DecodingMode = Strict | ForwardCompatible
+  deriving stock (Eq, Show)
+
+-- | A key present on the wire but not consumed by the matched schema
+-- version, with its raw JSON value, so dropping it is visible and
+-- auditable rather than silent data loss. Warnings are ordered by key,
+-- not wire order (aeson 2.x's key map does not preserve insertion
+-- order), which makes them deterministic for identical input.
+data DecodeWarning = UnknownField Text Value
+  deriving stock (Eq, Show)
+
+baseFieldNames :: [Text]
+baseFieldNames = ["version", "ghcVersion", "span", "severity", "code", "message", "hints"]
+
+-- | Total: one equation per known schema version (compiler-checked).
+knownFieldNames :: SKnownSchemaVersion v -> [Text]
+knownFieldNames SV1_0 = baseFieldNames
+knownFieldNames SV1_1 = baseFieldNames <> ["reason"]
+knownFieldNames SV1_2 = baseFieldNames <> ["reason", "rendered"]
+
+unknownFields :: SKnownSchemaVersion v -> Object -> [(Text, Value)]
+unknownFields sv obj =
+  sortOn fst
+    [ (k, v)
+    | (key, v) <- KM.toList obj
+    , let k = Key.toText key
+    , k `notElem` knownFieldNames sv
+    ]
+
+-- | Shared front half of every decode entry point: bytes -> top-level
+-- object plus its declared schema version.
+parseVersionedObject :: ByteString -> Either DecodeError (Object, SchemaVersion)
+parseVersionedObject bs = do
+  value <- mapLeft (DecodeMalformedJson . Text.pack)
+             (eitherDecodeStrict bs :: Either String Value)
+  obj   <- expectObject value
+  rawSv <- extractSchemaVersionField obj
+  pure (obj, rawSv)
+
+decodeKnown :: SKnownSchemaVersion v -> Object -> Either DecodeError GhcDiagnostic
+decodeKnown sv obj = decodeRawByVersion sv obj >>= promote . SomeRawDiagnostic sv
+
+-- | Total. In 'Strict' mode the lexicographically first unknown key is
+-- reported as an error; in 'ForwardCompatible' mode every unknown key
+-- is returned alongside the decoded value.
+decodeDiagnosticLineWith
+  :: DecodingMode -> ByteString -> Either DecodeError (GhcDiagnostic, [DecodeWarning])
+decodeDiagnosticLineWith mode bs = do
+  (obj, rawSv) <- parseVersionedObject bs
+  case classifySchemaVersion rawSv of
+    Left (UnsupportedSchemaVersion sv) -> Left (DecodeUnsupportedVersion sv)
+    Right (SomeSKnownSchemaVersion sv) ->
+      let unknowns = unknownFields sv obj
+      in case (mode, unknowns) of
+           (Strict, (k, _) : _)   -> Left (DecodeUnknownField rawSv k)
+           (Strict, [])           -> (\d -> (d, [])) <$> decodeKnown sv obj
+           (ForwardCompatible, _) ->
+             (\d -> (d, map (uncurry UnknownField) unknowns)) <$> decodeKnown sv obj
