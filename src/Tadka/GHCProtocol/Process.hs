@@ -49,4 +49,4 @@ data BuildResult = BuildResult
     -- ^ In the order this collector observed the two pipes deliver
     -- data -- not a guarantee of the child's true cross-stream write
     -- order (I-19): stdout and stderr are independent OS pipes.
-  } deriving stock (Show)
+  } deriving stock (Eq, Show)

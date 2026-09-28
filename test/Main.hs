@@ -8,6 +8,7 @@ import qualified Data.ByteString as BS
 import System.Exit (ExitCode (ExitFailure))
 import Data.List.NonEmpty (NonEmpty ((:|)))
 import Data.Text (Text)
+import qualified Data.Text as Text
 import Prettyprinter (Doc, defaultLayoutOptions, layoutPretty)
 import Prettyprinter.Render.Text (renderStrict)
 import qualified Tadka
@@ -15,11 +16,18 @@ import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
   (Assertion, assertBool, assertEqual, assertFailure, testCase)
 
+import Data.Text.Encoding (encodeUtf8)
+import Hedgehog (Gen, Property, failure, forAll, property, (===))
+import qualified Hedgehog.Gen as Gen
+import qualified Hedgehog.Range as Range
+import Test.Tasty.Hedgehog (testProperty)
+
 import Tadka.GHCProtocol.BuildTool
 import Tadka.GHCProtocol.Decode
 import Tadka.GHCProtocol.Diagnostic
 import Tadka.GHCProtocol.Opaque
 import Tadka.GHCProtocol.Process
+import Tadka.GHCProtocol.Runner (BuildRunner (..))
 import Tadka.GHCProtocol.Schema
 import Tadka.GHCProtocol.Span
 import Tadka.GHCProtocol.Types
@@ -41,6 +49,7 @@ tests = testGroup "tadka-ghc"
   , testGroup "Phase 6: build tool wrapper" phase6Tests
   , testGroup "Phase 7: opaque output capture" phase7Tests
   , testGroup "Phase 8: pure stream semantics" phase8Tests
+  , testGroup "Phase 9: properties and deterministic build testing" phase9Tests
   ]
 
 --------------------------------------------------------------------------------
@@ -710,3 +719,123 @@ phase8Tests =
   where
     isRightE (Right _) = True
     isRightE (Left _)  = False
+--------------------------------------------------------------------------------
+-- Phase 9: Hedgehog property layer (§31.4) and BuildRunner-based
+-- deterministic build-tool testing (§9.4). Named for direct
+-- traceability against the spec's own property list where applicable.
+--------------------------------------------------------------------------------
+
+-- | ASCII letters only, no embedded newlines -- keeps messageDoc's
+-- line-per-fragment property meaningful (a fragment containing its own
+-- '\n' would make naive line-splitting ambiguous, which is a property
+-- about Text.splitOn, not about messageDoc's own fragment handling).
+genSafeText :: Gen Text.Text
+genSafeText = Gen.text (Range.linear 0 12) Gen.alpha
+
+-- | A GhcDiagnostic built directly (not via JSON decode), using
+-- Gen.discard for the rare case a generated value fails a smart
+-- constructor's validation -- the standard, total Hedgehog idiom for a
+-- generator with a precondition, not a partial function.
+genGhcDiagnostic :: Gen GhcDiagnostic
+genGhcDiagnostic = do
+  verTxt <- Gen.text (Range.linear 1 8) Gen.alpha
+  ver <- case mkGhcVersion verTxt of
+    Right v -> pure v
+    Left _  -> Gen.discard
+  sev <- Gen.element [SevWarning, SevError]
+  mCodeInt <- Gen.maybe (Gen.integral (Range.linear 0 999999))
+  mCode <- case mCodeInt of
+    Nothing -> pure Nothing
+    Just n  -> case mkGhcDiagnosticCode n of
+      Right c -> pure (Just c)
+      Left _  -> Gen.discard
+  msgs  <- Gen.list (Range.linear 0 5) genSafeText
+  hints <- Gen.list (Range.linear 0 5) genSafeText
+  pure GhcDiagnostic
+    { ghcVersion = ver, ghcSpan = Nothing, ghcSeverity = sev, ghcCode = mCode
+    , ghcMessage = msgs, ghcHints = hints, ghcReason = Nothing, ghcRendered = Nothing
+    }
+
+genBuildArgs :: Gen [Text.Text]
+genBuildArgs = Gen.list (Range.linear 0 5) genArg
+  where
+    genArg = Gen.choice
+      [ pure "--ghc-options=-fdiagnostics-as-json"
+      , pure "--ghc-options=-fno-diagnostics-as-json"
+      , pure "--ghc-options=-Wall"
+      , (\t -> "--ghc-options=" <> t) <$> genSafeText
+      ]
+
+-- | A line guaranteed non-JSON (doesn't start with '{'), non-blank, and
+-- not a panic marker -- so classifyStream is guaranteed to degrade it
+-- to a single ClassifiedOpaque with the bytes preserved exactly.
+genOpaqueSafeLine :: Gen BS.ByteString
+genOpaqueSafeLine = do
+  t <- Gen.text (Range.linear 1 12) Gen.alpha
+  pure (encodeUtf8 ("x" <> t))
+
+prop_messageDoc_preserves_order :: Property
+prop_messageDoc_preserves_order = property $ do
+  frags <- forAll (Gen.list (Range.linear 1 8) genSafeText)
+  let rendered  = renderDocText (messageDoc frags)
+      splitBack = Text.splitOn "\n" rendered
+  splitBack === frags
+
+prop_messageDoc_preserves_fragment_count :: Property
+prop_messageDoc_preserves_fragment_count = property $ do
+  frags <- forAll (Gen.list (Range.linear 1 8) genSafeText)
+  let rendered = renderDocText (messageDoc frags)
+  length (Text.splitOn "\n" rendered) === length frags
+
+prop_code_projection_always_Nothing :: Property
+prop_code_projection_always_Nothing = property $ do
+  d <- forAll genGhcDiagnostic
+  Tadka.code d === Nothing
+
+prop_unsupported_version_always_Left :: Property
+prop_unsupported_version_always_Left = property $ do
+  t <- forAll (Gen.filter (`notElem` ["1.0", "1.1", "1.2"]) (Gen.text (Range.linear 1 6) Gen.alphaNum))
+  case classifySchemaVersion (mkSchemaVersion t) of
+    Left _  -> pure ()
+    Right _ -> failure
+
+prop_flag_always_present_after_injection :: Property
+prop_flag_always_present_after_injection = property $ do
+  args <- forAll genBuildArgs
+  let injected = injectDiagnosticsFlag Cabal args
+  diagnosticsJsonCurrentlyEnabled injected === True
+
+prop_injection_idempotent :: Property
+prop_injection_idempotent = property $ do
+  args <- forAll genBuildArgs
+  let once  = injectDiagnosticsFlag Cabal args
+      twice = injectDiagnosticsFlag Cabal once
+  once === twice
+
+prop_classifyStream_reconstructs_input :: Property
+prop_classifyStream_reconstructs_input = property $ do
+  lns <- forAll (Gen.list (Range.linear 0 8) genOpaqueSafeLine)
+  let results = classifyStream StdOut lns
+      recovered = map recoverBytes results
+  recovered === lns
+  where
+    recoverBytes (ClassifiedOpaque o)     = opaqueRawBytes o
+    recoverBytes (ClassifiedDiagnostic _) = ""
+
+phase9Tests :: [TestTree]
+phase9Tests =
+  [ testProperty "messageDoc preserves fragment order" prop_messageDoc_preserves_order
+  , testProperty "messageDoc preserves fragment count" prop_messageDoc_preserves_fragment_count
+  , testProperty "GHC code never becomes a Tadka code" prop_code_projection_always_Nothing
+  , testProperty "unsupported schema versions never silently decode" prop_unsupported_version_always_Left
+  , testProperty "flag always present after injection" prop_flag_always_present_after_injection
+  , testProperty "flag injection is idempotent" prop_injection_idempotent
+  , testProperty "classifyStream drops no input line (non-panic, non-JSON subset)"
+      prop_classifyStream_reconstructs_input
+
+  , testCase "BuildRunner: a fake runner enables deterministic testing without a real toolchain" $ do
+      let fakeResult = BuildResult CompilerSucceeded [(StdOut, validDiagLine)]
+          fakeRunner = BuildRunner (\_ _ _ _ -> pure fakeResult)
+      result <- execute fakeRunner Nothing Cabal "." []
+      assertEqual "fake result returned unchanged" fakeResult result
+  ]
