@@ -96,9 +96,13 @@ executable tadka-ghc
   hs-source-dirs:   app
   main-is:          Main.hs
   build-depends:
-      base >=4 && <5
+      base           >=4    && <5
     , tadka-ghc
     , tadka-ghc-process
+    , tadka          >=2.0  && <3
+    , text            >=1.2  && <2.3
+    , time           >=1.9  && <1.16
+    , filepath       >=1.4  && <1.6
   default-language: Haskell2010
 
 test-suite tadka-ghc-test
