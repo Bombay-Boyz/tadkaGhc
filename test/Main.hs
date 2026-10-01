@@ -508,6 +508,16 @@ phase6Tests =
       result <- detectBuildTool (Just Stack) "test/fixtures/build/cabal-only"
       assertEqual "detected" (Right Stack) result
 
+  , testCase "detectBuildTool: a nonexistent directory is a typed error, not an uncaught exception (regression)" $ do
+      -- Found via manual CLI testing: without explicit exception handling,
+      -- this crashed with an uncaught IOException instead of the typed
+      -- BuildToolDetectionError this function's type otherwise promises.
+      result <- detectBuildTool Nothing "/this/path/does/not/exist"
+      case result of
+        Left (ProjectDirectoryUnreadable dir _) ->
+          assertEqual "path recorded" "/this/path/does/not/exist" dir
+        other -> assertFailure ("expected ProjectDirectoryUnreadable, got " <> show other)
+
   , testCase "detectBuildTool: cabal-only fixture selects Cabal" $ do
       result <- detectBuildTool Nothing "test/fixtures/build/cabal-only"
       assertEqual "detected" (Right Cabal) result

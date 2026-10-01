@@ -22,6 +22,7 @@ module Tadka.GHCProtocol.BuildTool
   , flushFramer
   ) where
 
+import Control.Exception (IOException, try)
 import qualified Data.ByteString as BS
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Maybe (mapMaybe)
@@ -40,6 +41,15 @@ data BuildTool = Cabal | Stack
 data BuildToolDetectionError
   = NoRecognizedProjectFile
   | AmbiguousProjectFiles (NonEmpty FilePath)
+  | ProjectDirectoryUnreadable FilePath Text
+    -- ^ A genuine IO failure reading the directory itself (does not
+    -- exist, permission denied, not a directory, etc.) -- distinct
+    -- from 'NoRecognizedProjectFile', which means the directory WAS
+    -- read successfully and simply contains no recognised project
+    -- file. Confirmed as a real gap via manual CLI testing: without
+    -- this, detectBuildTool on a nonexistent path crashed with an
+    -- uncaught IOException instead of the typed error this type
+    -- otherwise promises.
   deriving stock (Eq, Show)
 
 -- | 'Just' bypasses detection (and the filesystem check) entirely,
@@ -49,7 +59,11 @@ data BuildToolDetectionError
 -- an ancestor directory.
 detectBuildTool :: Maybe BuildTool -> FilePath -> IO (Either BuildToolDetectionError BuildTool)
 detectBuildTool (Just tool) _   = pure (Right tool)
-detectBuildTool Nothing     dir = classifyEntries <$> listDirectory dir
+detectBuildTool Nothing     dir = do
+  result <- try (listDirectory dir) :: IO (Either IOException [FilePath])
+  pure $ case result of
+    Left e        -> Left (ProjectDirectoryUnreadable dir (Text.pack (show e)))
+    Right entries -> classifyEntries entries
 
 -- | Total: presence of @stack.yaml@ (exact casing) selects 'Stack'
 -- regardless of any @.cabal@/@cabal.project@ files also present, since
