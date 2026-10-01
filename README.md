@@ -1,5 +1,3 @@
-
-
 # tadka-ghc
 
 An adapter for GHC's external `-fdiagnostics-as-json` protocol. It runs
@@ -30,10 +28,13 @@ honestly-flagged, non-blocking gaps that remain.
 This package depends on `tadka`, which is not yet on Hackage and is
 pulled directly from its GitHub repository. `cabal.project` already
 pins an exact commit:
+
+```
 source-repository-package
-type: git
-location: https://github.com/Bombay-Boyz/tadka.git
-tag: bc750f8694df8424ed0a8c985bd7fa1754dc11ad
+  type:     git
+  location: https://github.com/Bombay-Boyz/tadka.git
+  tag:      bc750f8694df8424ed0a8c985bd7fa1754dc11ad
+```
 
 Build everything:
 
@@ -50,8 +51,10 @@ cabal build --flags=+werror
 ```
 
 ## Usage
-tadka-ghc [DIR] [OPTIONS] [-- EXTRA-BUILD-ARGS...]
 
+```
+tadka-ghc [DIR] [OPTIONS] [-- EXTRA-BUILD-ARGS...]
+```
 
 Run it from, or point it at, any `cabal`/`stack` project:
 
@@ -64,15 +67,15 @@ tadka-ghc path/to/project        # build a project elsewhere
 
 | Flag | Effect |
 |---|---|
-| `--cabal` / `--stack` | Force the build tool (default: auto-detected from the project's files — `stack.yaml` wins if present, otherwise a single `*.cabal` file or `cabal.project`; more than one `*.cabal` file with no `stack.yaml` is reported as ambiguous rather than guessed) |
+| `--cabal` / `--stack` | Force the build tool (default: auto-detected from the project's files -- `stack.yaml` wins if present, otherwise a single `*.cabal` file or `cabal.project`; more than one `*.cabal` file with no `stack.yaml` is reported as ambiguous rather than guessed) |
 | `--graphical` / `--narratable` / `--json` | Force the render target (default: Tadka auto-detects the terminal) |
 | `--timeout=SECONDS` | Kill the build after this many seconds |
-| `--verbose`, `-v` | Show every captured build-tool line, not just decoded diagnostics and (on failure) captured output — see [Output philosophy](#output-philosophy) |
+| `--verbose`, `-v` | Show every captured build-tool line, not just decoded diagnostics and (on failure) captured output -- see [Output philosophy](#output-philosophy) |
 | `-- ARGS...` | Everything after `--` is passed straight through to the build tool (e.g. `-- --ghc-options=-Wunused-imports`) |
 | `--help`, `-h` | Show usage |
 
 The `-fdiagnostics-as-json` flag is injected automatically into every
-build — you never need to pass it yourself, and your own
+build -- you never need to pass it yourself, and your own
 `--ghc-options` (including an explicit `-fno-diagnostics-as-json`) are
 never removed, only appended after, so the flag still wins without
 silently overriding anything you wrote.
@@ -82,12 +85,14 @@ silently overriding anything you wrote.
 ```bash
 $ tadka-ghc path/to/project-with-a-type-error
 ```
-error: Couldn't match expected type ‘[Char]’ with actual type ‘Int’ ...
-┌─ Main.hs:3:18
-│
-3 │ main = putStrLn (1 :: Int)
-│ ^^^^^^^^
 
+```
+error: Couldn't match expected type 'Char' with actual type 'Int' ...
+  +- Main.hs:3:18
+  |
+3 | main = putStrLn (1 :: Int)
+  |                  ^^^^^^^^
+```
 
 Decoded diagnostics are bound against the real source file on disk, so
 the offending line and the caret underline above are pulled from your
@@ -99,12 +104,12 @@ be started; `130` if the build process was killed by a signal).
 ### Output philosophy
 
 Every line a build produces becomes either a faithfully decoded GHC
-diagnostic or an honestly-labeled captured record — nothing is ever
+diagnostic or an honestly-labeled captured record -- nothing is ever
 silently dropped. By default, decoded diagnostics are always shown
 (a warning matters even on an otherwise successful build), but
 captured non-diagnostic output (cabal's own progress text, "Building
 executable...", etc.) is only shown when the build did **not**
-succeed — mirroring how `cabal`/`stack` themselves behave: quiet on
+succeed -- mirroring how `cabal`/`stack` themselves behave: quiet on
 success, full context on failure. Pass `--verbose` to always see the
 full captured transcript regardless of outcome. This is a
 presentation-layer decision only; nothing about what gets captured or
@@ -121,16 +126,16 @@ hlint src process app test       # lint
 
 ### Project layout
 
-- `src/` — the core library (`tadka-ghc`): pure GHC-JSON decoding,
+- `src/` -- the core library (`tadka-ghc`): pure GHC-JSON decoding,
   semantic promotion, source-span binding, Tadka projection, build-tool
   detection/flag-injection, and output classification. No process I/O.
-- `process/` — the `tadka-ghc-process` component: the one function in
+- `process/` -- the `tadka-ghc-process` component: the one function in
   this package that actually spawns a subprocess (`runBuild`). Kept
   separate so depending on the core library alone never pulls in a
   process-spawning capability you didn't ask for.
-- `app/` — the `tadka-ghc` executable, wiring the above together into
+- `app/` -- the `tadka-ghc` executable, wiring the above together into
   the CLI described above.
-- `test/` — the test suite: schema/wire-format fixtures, coordinate
+- `test/` -- the test suite: schema/wire-format fixtures, coordinate
   fixtures, golden-rendered output, Hedgehog properties, and a tagged
   real-subprocess integration test.
 
@@ -149,9 +154,9 @@ Documented honestly rather than silently left as gaps:
   handler directly is reliably recognized (confirmed against GHC's own
   `GHC.Utils.Panic.Plain` source for the exact installed GHC version
   this project is built against). A panic re-routed through GHC's own
-  diagnostic-rendering pipeline — which can appear as a separate
+  diagnostic-rendering pipeline -- which can appear as a separate
   `<no location info>: error:` line followed by an indented `panic!`
-  line with no `ghc:` prefix — is not recognized as the start of that
+  line with no `ghc:` prefix -- is not recognized as the start of that
   block. This causes no data loss (every line is still captured), only
   weaker grouping of a multi-line panic into separate records.
 - **Schema `"1.2"`'s `rendered` field has never been observed from a
@@ -164,9 +169,4 @@ Documented honestly rather than silently left as gaps:
 
 ## License
 
-MPL-2.0. *(A `LICENSE` file with the full license text is pending —
-this field is already set correctly in `tadka-ghc.cabal`.)*
-EOF
-
-git add -A
-git commit -m "Item 5: write a real README covering usage, output philosophy, dev workflow, and known limitations"
+MPL-2.0. See [`LICENSE`](LICENSE) for the full text.
