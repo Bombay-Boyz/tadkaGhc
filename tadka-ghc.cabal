@@ -10,6 +10,7 @@ description:
   existing renderers can handle graphical, prose, and JSON output.
 category:            Development, Compilers/Interpreters
 license:             MPL-2.0
+license-file:        LICENSE
 maintainer:          TODO-REPLACE-ME <maintainer@example.com>
 build-type:          Simple
 
