@@ -176,11 +176,17 @@ schema12Tests =
   [ testCase "minimal decodes"     $ assertRight "test/fixtures/schema/1.2/minimal.json"
   , testCase "missing-field fails" $ assertLeft "test/fixtures/schema/1.2/missing-field.json"
   , testCase "optional-rendered: rendered text preserved exactly" $ do
-      result <- decodeFixture "test/fixtures/schema/1.2/optional-rendered.json"
+      result <- decodeFixture "test/fixtures/schema/1.2/rendered.json"
       case result of
         Right (SomeRawDiagnostic SV1_2 (RawDiagnosticV1_2 f)) ->
-          assertBool "rendered present" (rf12Rendered f /= Nothing)
+          assertBool "rendered present and non-empty" (not (Text.null (rf12Rendered f)))
         _ -> assertFailure "expected SV1_2 dispatch"
+
+  , testCase "rendered: MISSING under schema 1.2 is a decode error, not silently absent" $ do
+      result <- decodeFixture "test/fixtures/schema/1.2/missing-rendered.json"
+      case result of
+        Left _  -> pure ()
+        Right _ -> assertFailure "expected a missing-field decode error; 'rendered' is required under 1.2"
   , testCase "reason still available at 1.2 (inherited from 1.1)" $ do
       result <- decodeFixture "test/fixtures/schema/1.2/minimal.json"
       case result of
@@ -259,7 +265,7 @@ phase2Tests =
         Left e -> assertFailure (show e)
 
   , testCase "rendered output preserved as inert metadata, not reparsed (§15)" $ do
-      result <- decodeFixtureFull "test/fixtures/schema/1.2/optional-rendered.json"
+      result <- decodeFixtureFull "test/fixtures/schema/1.2/rendered.json"
       case result of
         Right d -> case ghcRendered d of
           Just (RenderedDiagnostic t) -> assertBool "non-empty rendered text" (not (null (show t)))
@@ -685,6 +691,20 @@ phase7Tests =
 
   , testCase "isPanicMarker: does not match ordinary output" $
       assertBool "no match" (not (isPanicMarker progressLine))
+
+  , testCase "KNOWN LIMITATION: a diagnostic-pipeline-wrapped panic is not grouped, but is NOT dropped either" $ do
+      -- Documents a real, confirmed gap found while verifying isPanicMarker
+      -- against GHC's source: this form (no leading "ghc: ", indented,
+      -- prefixed by a separate "<no location info>: error:" line) is not
+      -- recognised as a panic START. Each line still becomes its own
+      -- ClassifiedOpaque record -- completeness (§4) holds; only grouping
+      -- into one coherent block does not.
+      contents <- BS.readFile "test/fixtures/build/panic-wrapped/lines.txt"
+      let ls = filter (not . BS.null) (BSC.split '\n' contents)
+          results = classifyStream StdErr ls
+      assertEqual "one record per line (not merged into one block)" (length ls) (length results)
+      assertBool "every line is still captured as opaque, none lost"
+        (all (\r -> case r of ClassifiedOpaque _ -> True; _ -> False) results)
   ]
 --------------------------------------------------------------------------------
 -- Phase 8: pure stream semantics over known-diagnostic JSON Lines (§23)
@@ -884,7 +904,7 @@ decodingModeTests =
         Left e -> assertFailure (show e)
 
   , testCase "Strict accepts a fixture with no unknown fields, with no warnings" $ do
-      bs <- BS.readFile "test/fixtures/schema/1.2/optional-rendered.json"
+      bs <- BS.readFile "test/fixtures/schema/1.2/rendered.json"
       case decodeDiagnosticLineWith Strict bs of
         Right (_, ws) -> assertEqual "warnings" [] ws
         Left e        -> assertFailure (show e)

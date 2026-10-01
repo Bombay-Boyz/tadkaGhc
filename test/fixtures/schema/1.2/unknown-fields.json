@@ -1,1 +1,1 @@
-{"version":"1.2","ghcVersion":"9.10.1","span":null,"severity":"Warning","code":null,"message":["forward compatible"],"hints":[],"extraField":"surprise","anotherOne":42}
+{"version":"1.2","ghcVersion":"9.10.1","span":null,"severity":"Warning","code":null,"message":["forward compatible"],"hints":[],"extraField":"surprise","anotherOne":42,"rendered":"rendered diagnostic text"}

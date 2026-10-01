@@ -142,7 +142,13 @@ data RawFieldsV1_2 = RawFieldsV1_2
   , rf12Message  :: [Text]
   , rf12Hints    :: [Text]
   , rf12Reason   :: Maybe RawReason
-  , rf12Rendered :: Maybe Text       -- ^ provisionally new in 1.2 (see Phase 1.3 note)
+  , rf12Rendered :: Text             -- ^ CONFIRMED required under schema 1.2 (not
+                                     -- optional): GHC's own source unconditionally
+                                     -- includes it ("rendered", JSString rendered),
+                                     -- unlike "code"'s maybe-wrapped encoding --
+                                     -- verified against the ticket #26173 commit
+                                     -- that introduces this field and bumps
+                                     -- schemaVersion to "1.2" in the same change.
   } deriving stock (Eq, Show)
 
 -- | Nested, per GHC's confirmed wire shape: span -> {file, start, end}.

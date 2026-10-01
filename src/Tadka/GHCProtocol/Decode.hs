@@ -84,7 +84,7 @@ parseFieldsV1_2 obj = mapLeft (DecodeFieldTypeMismatch (mkSchemaVersion "1.2") "
       <*> o .:  "message"
       <*> o .:  "hints"
       <*> o .:? "reason"
-      <*> o .:? "rendered"
+      <*> o .:  "rendered"
 
 decodeRawByVersion
   :: SKnownSchemaVersion v -> Object -> Either DecodeError (RawDiagnostic v)
@@ -180,7 +180,9 @@ promoteV1_2 f = do
     , ghcMessage  = rf12Message f
     , ghcHints    = rf12Hints f
     , ghcReason   = promoteReason <$> rf12Reason f
-    , ghcRendered = RenderedDiagnostic <$> rf12Rendered f
+    , ghcRendered = Just (RenderedDiagnostic (rf12Rendered f))
+      -- always Just under 1.2: 'rendered' is a required field on this
+      -- schema version, confirmed against GHC's own source (see Schema.hs)
     }
 
 -- | The normative primitive (§22, §33): deliberately independent of file

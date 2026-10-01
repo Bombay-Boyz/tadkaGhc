@@ -1,0 +1,4 @@
+<no location info>: error:
+    panic! (the 'impossible' happened)
+      (GHC version 9.14.1 for x86_64-linux):
+	nameModule
