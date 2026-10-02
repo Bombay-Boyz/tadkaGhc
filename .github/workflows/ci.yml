@@ -17,6 +17,10 @@ name: CI
 permissions:
   contents: read
 
+# Runners are pinned to ubuntu-24.04 rather than ubuntu-latest so the
+# toolchain environment only changes when this file does (the ubuntu-latest
+# label migrates to Ubuntu 26 on 2026-10-19).
+
 on:
   push:
     branches: [main]
@@ -27,13 +31,13 @@ on:
 jobs:
   build-and-test:
     name: build & test (fake BuildRunner) — GHC ${{ matrix.ghc }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         ghc: ["9.10.3", "9.12.4", "9.14.1"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: haskell-actions/setup@v2
         id: setup
@@ -72,9 +76,9 @@ jobs:
 
   hlint:
     name: hlint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: haskell-actions/hlint-setup@v2
       - uses: haskell-actions/hlint-run@v2
         with:
@@ -86,10 +90,10 @@ jobs:
 
   real-subprocess-integration:
     name: real ioBuildRunner integration (newest supported GHC only)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build-and-test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: haskell-actions/setup@v2
         with:
@@ -108,10 +112,10 @@ jobs:
 
   package-bounds-refresh:
     name: package bounds refresh (scheduled)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event_name == 'schedule'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: haskell-actions/setup@v2
         with:
           ghc-version: "9.14.1"
