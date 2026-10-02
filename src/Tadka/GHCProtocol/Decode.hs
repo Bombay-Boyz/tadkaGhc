@@ -214,7 +214,7 @@ stripTrailingCR bs
 -- Either, so one malformed record never obscures another's success or
 -- failure (§23).
 decodeDiagnosticStream :: [ByteString] -> [Either DecodeError GhcDiagnostic]
-decodeDiagnosticStream = mapMaybe decodeNonBlank . map stripTrailingCR
+decodeDiagnosticStream = mapMaybe (decodeNonBlank . stripTrailingCR)
   where
     decodeNonBlank bs
       | BS.null bs = Nothing

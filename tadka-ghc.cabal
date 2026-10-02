@@ -13,6 +13,20 @@ license:             MPL-2.0
 license-file:        LICENSE
 maintainer:          TODO-REPLACE-ME <maintainer@example.com>
 build-type:          Simple
+-- The test-suite reads these by relative path, so they must ship in the
+-- sdist. Cabal only allows a wildcard together with a file extension, so
+-- there is one glob per extension used under test/fixtures; a fixture with
+-- a NEW extension must be added here (the sdist file count catches a miss).
+-- test/fixtures/build/none contains only a dotfile (the suite needs that
+-- otherwise-empty directory to exist), so it is listed explicitly.
+extra-source-files:
+  test/fixtures/**/*.cabal
+  test/fixtures/**/*.golden
+  test/fixtures/**/*.json
+  test/fixtures/**/*.project
+  test/fixtures/**/*.txt
+  test/fixtures/**/*.yaml
+  test/fixtures/build/none/.gitkeep
 
 source-repository head
   type:     git
@@ -49,6 +63,17 @@ common extensions
     BangPatterns
     EmptyDataDecls
 
+-- tadka bound (spec Phase 10 / I-09): written and verified against
+-- tadka-2.0.0.0 from Hackage. Public identifiers used by the library and
+-- executable: Diagnostic(..), Severity(SevWarning, SevError), Ann,
+-- Context(NoContext), mkContext, ContextError, Labeled(..),
+-- LabelKind(Primary), mkNamedSource, SourceError, mkSpan, SpanBuildError,
+-- Target(TGraphical, TNarratable, TJson), Config, defaultConfig,
+-- withTarget, reportDiagnostic. The test-suite additionally uses
+-- contextLabelStates, LabelOk, Narratable, SomeRenderer, selectRenderer
+-- and render. Widen the upper bound only after a clean build and test run
+-- against the new major version.
+
 -- Core library: pure GHC adaptation, no process I/O (spec Phase 2, I-35).
 library
   import:           warnings, extensions
@@ -64,15 +89,15 @@ library
     Tadka.GHCProtocol.Opaque
     Tadka.GHCProtocol.Process
   build-depends:
-      base           >=4     && <5
-    , aeson          >=2.0   && <2.3
-    , text           >=1.2   && <2.3
-    , bytestring     >=0.10  && <0.14
-    , containers     >=0.6   && <0.9
-    , filepath       >=1.4   && <1.6
-    , directory      >=1.3   && <1.5
-    , prettyprinter  >=1.7   && <1.8
-    , tadka          >=2.0   && <3
+      base            >=4.20      && <4.23
+    , aeson           >=2.0       && <2.3
+    , text            >=2.0.2     && <2.3
+    , bytestring      >=0.10.12   && <0.14
+    , containers      >=0.6       && <0.9
+    , filepath        >=1.4       && <1.6
+    , directory       >=1.3       && <1.5
+    , prettyprinter   >=1.7       && <1.8
+    , tadka           >=2.0.0.0   && <2.1
   default-language: Haskell2010
 
 -- Process-execution component: the only place typed-process is a
@@ -83,13 +108,13 @@ library tadka-ghc-process
   exposed-modules:
     Tadka.GHCProtocol.Runner
   build-depends:
-      base           >=4    && <5
+      base            >=4.20      && <4.23
     , tadka-ghc
-    , typed-process  >=0.2  && <0.3
-    , stm            >=2.5  && <2.7
-    , time           >=1.9  && <1.16
-    , bytestring     >=0.10 && <0.14
-    , text           >=1.2  && <2.3
+    , typed-process   >=0.2       && <0.3
+    , stm             >=2.5       && <2.7
+    , time            >=1.9       && <1.16
+    , bytestring      >=0.10.12   && <0.14
+    , text            >=2.0.2     && <2.3
   default-language: Haskell2010
 
 executable tadka-ghc
@@ -97,13 +122,13 @@ executable tadka-ghc
   hs-source-dirs:   app
   main-is:          Main.hs
   build-depends:
-      base           >=4    && <5
+      base            >=4.20      && <4.23
     , tadka-ghc
     , tadka-ghc-process
-    , tadka          >=2.0  && <3
-    , text            >=1.2  && <2.3
-    , time           >=1.9  && <1.16
-    , filepath       >=1.4  && <1.6
+    , tadka           >=2.0.0.0   && <2.1
+    , text            >=2.0.2     && <2.3
+    , time            >=1.9       && <1.16
+    , filepath        >=1.4       && <1.6
   default-language: Haskell2010
 
 test-suite tadka-ghc-test
@@ -112,16 +137,16 @@ test-suite tadka-ghc-test
   hs-source-dirs:   test
   main-is:          Main.hs
   build-depends:
-      base           >=4    && <5
+      base            >=4.20      && <4.23
     , tadka-ghc
     , tadka-ghc-process
-    , tadka          >=2.0  && <3
-    , prettyprinter  >=1.7  && <1.8
-    , aeson          >=2.0  && <2.3
-    , directory      >=1.3  && <1.5
-    , filepath       >=1.4  && <1.6
-    , bytestring     >=0.10 && <0.14
-    , text           >=1.2  && <2.3
+    , tadka           >=2.0.0.0   && <2.1
+    , prettyprinter   >=1.7       && <1.8
+    , aeson           >=2.0       && <2.3
+    , directory       >=1.3       && <1.5
+    , filepath        >=1.4       && <1.6
+    , bytestring      >=0.10.12   && <0.14
+    , text            >=2.0.2     && <2.3
     , tasty
     , tasty-hedgehog
     , hedgehog

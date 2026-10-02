@@ -1,4 +1,6 @@
-# Severity split (spec Phase 10): style-only suggestions are non-blocking,
-# correctness/partiality hints are blocking. Fill in ignore/error rules
-# here as categories are identified.
-- ignore: {}
+# Policy (spec section 0.1 and Phase 10): style-only hints are
+# non-blocking; partial functions are blocking, in library, executable
+# and test code alike.
+- functions:
+  - name: [head, tail, init, last, "!!", fromJust, read, error, undefined]
+    within: []

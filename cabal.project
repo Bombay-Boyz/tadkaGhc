@@ -1,16 +1,1 @@
 packages: .
-
--- Pinned to the tip of origin/main as of this integration (bc750f8),
--- deliberately NOT the v2.0.0.0 tag: the tag's Context/Diagnostic/Span/
--- Types API is materially older than what tadka-ghc is written against
--- here (spec Phase 10/I-09's "record the exact pinned release" rule).
--- Public identifiers used: Tadka.NamedSource, Tadka.mkNamedSource,
--- Tadka.SourceError, Tadka.Span, Tadka.mkSpan, Tadka.SpanBuildError,
--- Tadka.Context (NoContext), Tadka.Labeled(..), Tadka.LabelKind(Primary),
--- Tadka.mkContext, Tadka.ContextError, Tadka.contextLabelStates,
--- Tadka.Diagnostic(..), Tadka.Severity(..), Tadka.DiagnosticCode,
--- Tadka.Url, Tadka.DiagnosticId.
-source-repository-package
-  type: git
-  location: https://github.com/Bombay-Boyz/tadka.git
-  tag: bc750f8694df8424ed0a8c985bd7fa1754dc11ad

@@ -10,6 +10,7 @@ import System.FilePath ((</>))
 import System.Directory (createDirectoryIfMissing, getTemporaryDirectory, removePathForcibly)
 import Data.Functor.Identity (runIdentity)
 import Data.Foldable (toList)
+import Data.Maybe (isJust)
 import Data.Aeson (Value (Number, String), eitherDecodeStrict)
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BL
@@ -388,7 +389,7 @@ phase3Tests =
 
   , testCase "bindSpan: success -> SpanBound with a real Context" $ do
       sp <- buildSpanIO "Foo.hs" 1 5 1 6
-      let provide = \_ -> pure (Right (Just (SourceText "let x = 1\n")))
+      let provide _ = pure (Right (Just (SourceText "let x = 1\n")))
       result <- bindSpan (SourceProvider provide) (Just sp)
       case result of
         SpanBound ctx -> case Tadka.contextLabelStates ctx of
@@ -426,7 +427,7 @@ phase5Tests =
       case result of
         Right d -> do
           assertEqual "Tadka.code" Nothing (Tadka.code d)
-          assertBool "ghcCode preserved" (ghcCode d /= Nothing)
+          assertBool "ghcCode preserved" (isJust (ghcCode d))
         Left e -> assertFailure (show e)
 
   , testCase "no fabricated related/id (§21)" $ do
