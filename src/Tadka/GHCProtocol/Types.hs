@@ -18,9 +18,11 @@ module Tadka.GHCProtocol.Types
     -- * GhcVersion
   , GhcVersion
   , mkGhcVersion
+  , unGhcVersion
     -- * GhcDiagnosticCode
   , GhcDiagnosticCode
   , mkGhcDiagnosticCode
+  , unGhcDiagnosticCode
     -- * GhcSeverity
   , GhcSeverity (..)
   , mkGhcSeverity
@@ -39,6 +41,8 @@ module Tadka.GHCProtocol.Types
   , GhcSpan (..)
   , mkGhcSpan
   , promoteSpan
+  , renderPosition
+  , renderGhcSpan
     -- * GhcDiagnostic
   , GhcDiagnostic (..)
   ) where
@@ -71,6 +75,9 @@ data DecodeError
   | InvalidDiagnosticCode Integer
   | UnrecognizedSeverity Text
   | InvalidCoordinate Text Integer
+  | InvalidSpanOrder (Line, Column) (Line, Column)
+    -- ^ A span whose end precedes its start; carries the start and the end
+    -- (in that order) exactly as they appeared on the wire.
   deriving stock (Eq, Show)
 
 --------------------------------------------------------------------------------
@@ -90,6 +97,11 @@ mkGhcVersion t
   | Text.null t = Left (InvalidGhcVersion t)
   | otherwise   = Right (GhcVersion t)
 
+-- | The compiler version string exactly as GHC reported it (for example
+-- @"9.10.1"@). Never empty: 'mkGhcVersion' is the only way to build one.
+unGhcVersion :: GhcVersion -> Text
+unGhcVersion (GhcVersion t) = t
+
 --------------------------------------------------------------------------------
 -- GhcDiagnosticCode (§10: preserves GHC's numeric code exactly; never
 -- fabricated into a Tadka DiagnosticCode).
@@ -107,6 +119,11 @@ mkGhcDiagnosticCode n
   | n < 0                            = Left (InvalidDiagnosticCode n)
   | n > toInteger (maxBound :: Int)  = Left (InvalidDiagnosticCode n)
   | otherwise                        = Right (GhcDiagnosticCode (fromInteger n))
+
+-- | GHC's own numeric diagnostic code, preserved exactly (for example
+-- @88464@); never converted into a Tadka diagnostic code.
+unGhcDiagnosticCode :: GhcDiagnosticCode -> Int
+unGhcDiagnosticCode (GhcDiagnosticCode n) = n
 
 --------------------------------------------------------------------------------
 -- GhcSeverity (§11: exactly the two values GHC's schema defines; no
@@ -159,20 +176,23 @@ newtype Line = Line Int
 newtype Column = Column Int
   deriving stock (Eq, Ord, Show)
 
--- | Total: rejects both ends of the range a wire Integer could fall
--- outside of. One-based, per §19/§3.1's (provisional) convention.
+-- | The one-based line number.
 unLine :: Line -> Int
 unLine (Line n) = n
 
+-- | Total: rejects both ends of the range a wire Integer could fall
+-- outside of. One-based, per §19/§3.1's (provisional) convention.
 mkLine :: Integer -> Either DecodeError Line
 mkLine n
   | n < 1                            = Left (InvalidCoordinate "line numbers are 1-based; got " n)
   | n > toInteger (maxBound :: Int)  = Left (InvalidCoordinate "line number exceeds Int range; got " n)
   | otherwise                        = Right (Line (fromInteger n))
 
+-- | The one-based column number.
 unColumn :: Column -> Int
 unColumn (Column n) = n
 
+-- | Total: same range rules as 'mkLine', for columns.
 mkColumn :: Integer -> Either DecodeError Column
 mkColumn n
   | n < 1                            = Left (InvalidCoordinate "columns are 1-based; got " n)
@@ -187,10 +207,30 @@ data GhcSpan = GhcSpan
   , spanEndCol    :: Column
   } deriving stock (Eq, Show)
 
+-- | Total: rejects a span whose end precedes its start, reporting both
+-- positions in 'InvalidSpanOrder'. A zero-width span (end equal to start)
+-- is accepted.
 mkGhcSpan :: FilePath -> Line -> Column -> Line -> Column -> Either DecodeError GhcSpan
 mkGhcSpan file sl sc el ec
-  | (el, ec) < (sl, sc) = Left (InvalidCoordinate "span end precedes start" 0)
+  | (el, ec) < (sl, sc) = Left (InvalidSpanOrder (sl, sc) (el, ec))
   | otherwise            = Right (GhcSpan file sl sc el ec)
+
+-- | @line:column@, for example @"5:10"@.
+renderPosition :: Line -> Column -> Text
+renderPosition l c = showInt (unLine l) <> ":" <> showInt (unColumn c)
+  where
+    showInt :: Int -> Text
+    showInt = Text.pack . show
+
+-- | A compact, stable, human-readable location: @file:line:col-line:col@,
+-- for example @"Foo.hs:5:3-5:10"@. The file name is verbatim (§20). This
+-- is a label for messages, not GHC's own span syntax, and the end column
+-- is shown exactly as stored, with no inclusive/exclusive adjustment.
+renderGhcSpan :: GhcSpan -> Text
+renderGhcSpan sp =
+  Text.pack (spanFile sp)
+    <> ":" <> renderPosition (spanStartLine sp) (spanStartCol sp)
+    <> "-" <> renderPosition (spanEndLine sp) (spanEndCol sp)
 
 -- | Structural promotion of the wire's nested span shape into a
 -- validated 'GhcSpan'. Does not touch source text -- that is Phase 3's

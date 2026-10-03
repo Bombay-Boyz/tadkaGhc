@@ -55,6 +55,7 @@ tests = testGroup "tadka-ghc"
   , testGroup "Phase 2: semantic promotion" phase2Tests
   , testGroup "Phase 3: coordinate conversion / source binding" phase3Tests
   , testGroup "Phase 5: Tadka projection" phase5Tests
+  , testGroup "Public accessors and human-readable rendering" accessorAndRenderingTests
   , testGroup "Phase 6: build tool wrapper" phase6Tests
   , testGroup "Phase 7: opaque output capture" phase7Tests
   , testGroup "Phase 8: pure stream semantics" phase8Tests
@@ -251,11 +252,14 @@ phase2Tests =
           (ghcHints d)
         Left e -> assertFailure (show e)
 
-  , testCase "source/file identity preserved through promotion (§20)" $ do
+  , testCase "a span whose end precedes its start is rejected with its real coordinates" $ do
       result <- decodeFixtureFull "test/fixtures/schema/1.0/invalid-span-order.json"
       case result of
-        Left (InvalidCoordinate _ _) -> pure ()
-        other -> assertFailure ("expected InvalidCoordinate, got " <> show other)
+        Left (InvalidSpanOrder (sl, sc) (el, ec)) ->
+          assertEqual "start then end"
+            [5, 10, 5, 3]
+            [unLine sl, unColumn sc, unLine el, unColumn ec]
+        other -> assertFailure ("expected InvalidSpanOrder, got " <> show other)
 
   , testCase "GHC code is preserved, not fabricated into a Tadka code (§10)" $ do
       result <- decodeFixtureFull "test/fixtures/schema/1.0/maximal.json"
@@ -499,6 +503,94 @@ phase5Tests =
       sp <- buildSpanIO "Foo.hs" 1 1 1 2
       assertBool "non-empty" (renderSourceBindingError (InvalidCoordinates sp "x") /= "")
   ]
+--------------------------------------------------------------------------------
+-- Public accessors and human-readable rendering (audit B8, B10, B14)
+--------------------------------------------------------------------------------
+
+leftOrFail :: String -> Either a b -> IO a
+leftOrFail what = either pure (const (assertFailure (what <> ": expected Left, got Right")))
+
+-- A tadka 'Tadka.ContextError' obtained the way production code obtains
+-- one: a span reaching past the end of its source.
+outOfBoundsContextError :: IO Tadka.ContextError
+outOfBoundsContextError = do
+  named <- either (const (assertFailure "mkNamedSource rejected a valid name")) pure
+             (Tadka.mkNamedSource "Foo.hs" "abc")
+  spn   <- either (const (assertFailure "mkSpan rejected a valid span")) pure
+             (Tadka.mkSpan 0 10)
+  leftOrFail "a span past the end of the source"
+    (Tadka.mkContext named (Tadka.Labeled spn Tadka.Primary Nothing :| []))
+
+accessorAndRenderingTests :: [TestTree]
+accessorAndRenderingTests =
+  [ testCase "a consumer can read the GHC version, code and span back out (§10)" $ do
+      result <- decodeFixtureFull "test/fixtures/schema/1.1/maximal.json"
+      case result of
+        Left e  -> assertFailure (show e)
+        Right d -> do
+          assertEqual "version" "9.10.1" (unGhcVersion (ghcVersion d))
+          assertEqual "code" (Just 88464) (fmap unGhcDiagnosticCode (ghcCode d))
+          assertEqual "span" (Just "<interactive>:2:7-2:8") (fmap renderGhcSpan (ghcSpan d))
+
+  , testCase "an inverted span reports both positions, with no sentinel value (B8)" $ do
+      case buildSpan "Foo.hs" 3 4 3 2 of
+        Left e@(InvalidSpanOrder _ _) ->
+          assertEqual "rendering" "span ends at 3:2 before it starts at 3:4" (renderDecodeError e)
+        other -> assertFailure ("expected InvalidSpanOrder, got " <> show other)
+
+  , testCase "a zero-width span is accepted (B8)" $
+      case buildSpan "Foo.hs" 3 4 3 4 of
+        Right _ -> pure ()
+        Left e  -> assertFailure (show e)
+
+  , testCase "renderDecodeError never prints constructor or record syntax (B14)" $ do
+      let sv = mkSchemaVersion "1.0"
+          errs =
+            [ DecodeMalformedJson "unexpected end"
+            , DecodeNotAnObject
+            , DecodeMissingField sv "hints"
+            , DecodeFieldTypeMismatch sv "code" "integer"
+            , DecodeUnsupportedVersion sv
+            , DecodeUnknownField sv "extra"
+            , InvalidGhcVersion ""
+            , InvalidDiagnosticCode (-1)
+            , UnrecognizedSeverity "Note"
+            , InvalidCoordinate "line numbers are 1-based; got " 0
+            ]
+          leaks t = any (`Text.isInfixOf` t)
+                      ["Decode", "SchemaVersion", "Invalid", "Unrecognized", "{", "}"]
+      mapM_ (\e -> let t = renderDecodeError e
+                    in assertBool ("leaks Show syntax: " <> Text.unpack t) (not (leaks t)))
+            errs
+
+  , testCase "renderSourceBindingError never prints record syntax (B14)" $ do
+      sp      <- buildSpanIO "Foo.hs" 1 2 3 4
+      offErr  <- leftOrFail "negative offset" (Tadka.mkSpan (-1) 0)
+      lenErr  <- leftOrFail "negative length" (Tadka.mkSpan 0 (-1))
+      srcErr  <- leftOrFail "empty source name" (Tadka.mkNamedSource "" "x")
+      ctxErr  <- outOfBoundsContextError
+      let rendered =
+            [ renderSourceBindingError (InvalidCoordinates sp "bad")
+            , renderSourceBindingError (TadkaSpanRejected sp offErr)
+            , renderSourceBindingError (TadkaSpanRejected sp lenErr)
+            , renderSourceBindingError (TadkaSourceRejected sp srcErr)
+            , renderSourceBindingError (TadkaContextRejected sp ctxErr)
+            ]
+          leaks t = any (`Text.isInfixOf` t)
+                      ["GhcSpan {", "Line ", "Column ", "SpanBad", "EmptySourceName", "ContextError"]
+      mapM_ (\t -> assertBool ("leaks Show syntax: " <> Text.unpack t) (not (leaks t))) rendered
+      assertBool "names the span"
+        (all ("Foo.hs:1:2-3:4" `Text.isInfixOf`) rendered)
+
+  , testCase "an out-of-bounds binding error states both numbers (B14)" $ do
+      sp     <- buildSpanIO "Foo.hs" 1 1 1 2
+      ctxErr <- outOfBoundsContextError
+      assertEqual "message"
+        "span out of bounds against real source for Foo.hs:1:1-1:2: \
+        \the span ends at character 10 but the source has only 3 characters"
+        (renderSourceBindingError (TadkaContextRejected sp ctxErr))
+  ]
+
 --------------------------------------------------------------------------------
 -- Phase 6: build tool detection, flag injection, chunk framing (§31.5)
 --------------------------------------------------------------------------------

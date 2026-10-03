@@ -169,17 +169,43 @@ renderDecodeError e = case e of
     "unrecognized GHC severity: \"" <> t <> "\" (expected \"Warning\" or \"Error\")"
   InvalidCoordinate reason n ->
     reason <> Text.pack (show n)
+  InvalidSpanOrder (sl, sc) (el, ec) ->
+    "span ends at " <> renderPosition el ec
+      <> " before it starts at " <> renderPosition sl sc
 
 renderSourceBindingError :: SourceBindingError -> Text
 renderSourceBindingError e = case e of
   InvalidCoordinates sp reason ->
-    "invalid coordinates in " <> Text.pack (show sp) <> ": " <> reason
+    "invalid coordinates in " <> renderGhcSpan sp <> ": " <> reason
   TadkaSpanRejected sp err ->
-    "tadka rejected the span for " <> Text.pack (show sp) <> ": " <> Text.pack (show err)
+    "tadka rejected the span for " <> renderGhcSpan sp <> ": " <> describeSpanBuildError err
   TadkaSourceRejected sp err ->
-    "tadka rejected the source name for " <> Text.pack (show sp) <> ": " <> Text.pack (show err)
+    "tadka rejected the source name for " <> renderGhcSpan sp <> ": " <> describeSourceError err
   TadkaContextRejected sp err ->
-    "span out of bounds against real source for " <> Text.pack (show sp) <> ": " <> Text.pack (show err)
+    "span out of bounds against real source for " <> renderGhcSpan sp <> ": " <> describeContextError err
+
+-- tadka's error types derive only 'Show' and expose no public renderer, so
+-- each constructor gets a fixed, documented sentence here instead of
+-- interpolating 'show' output (which would print record syntax at the
+-- user). The payload of 'Tadka.SpanBadOffset' / 'Tadka.SpanBadLength' is
+-- not exported by tadka and carries nothing beyond which field was
+-- negative, so it is matched with a wildcard. These matches are
+-- exhaustive against tadka 2.0.x (the bound in the cabal file); a new
+-- constructor in a future tadka raises -Wincomplete-patterns here (an error
+-- under the werror flag and in CI), which is the intended prompt to update
+-- this module.
+
+describeSpanBuildError :: Tadka.SpanBuildError -> Text
+describeSpanBuildError (Tadka.SpanBadOffset _) = "the start offset is negative"
+describeSpanBuildError (Tadka.SpanBadLength _) = "the length is negative"
+
+describeSourceError :: Tadka.SourceError -> Text
+describeSourceError Tadka.EmptySourceName = "the source name is empty"
+
+describeContextError :: Tadka.ContextError -> Text
+describeContextError (Tadka.ContextError (Tadka.SpanOutOfBoundsError spanEnd sourceChars)) =
+  "the span ends at character " <> Text.pack (show spanEnd)
+    <> " but the source has only " <> Text.pack (show sourceChars) <> " characters"
 
 -- | Kept for completeness alongside the two renderers above, though not
 -- currently called from anywhere in this module.
