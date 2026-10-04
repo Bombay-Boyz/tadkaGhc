@@ -28,13 +28,18 @@ module Tadka.GHCProtocol.Diagnostic
   , renderDecodeError
   , renderSourceBindingError
   , renderSourceLookupError
+  , renderTimeoutError
+  , renderBuildToolDetectionError
   ) where
 
+import Data.Foldable (toList)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Prettyprinter (Doc, pretty, vsep)
 import qualified Tadka
 
+import Tadka.GHCProtocol.BuildTool (BuildToolDetectionError (..))
+import Tadka.GHCProtocol.Process (TimeoutError (..), maxTimeoutSeconds)
 import Tadka.GHCProtocol.Schema (unSchemaVersion)
 import Tadka.GHCProtocol.Span
   ( SourceBindingError (..)
@@ -213,3 +218,23 @@ renderSourceLookupError :: SourceLookupError -> Text
 renderSourceLookupError e = case e of
   SourceIOError msg         -> "source lookup failed: " <> msg
   SourceInvalidEncoding msg -> "source is not valid text: " <> msg
+
+-- | Why a timeout value was rejected, as a phrase that completes
+-- "timeout ...", for example "timeout must be greater than 0".
+renderTimeoutError :: TimeoutError -> Text
+renderTimeoutError e = case e of
+  TimeoutNotFinite   -> "must be a finite number"
+  TimeoutNotPositive -> "must be greater than 0"
+  TimeoutTooLarge    ->
+    "must be at most " <> Text.pack (show (truncate maxTimeoutSeconds :: Integer))
+      <> " seconds (one year)"
+
+renderBuildToolDetectionError :: BuildToolDetectionError -> Text
+renderBuildToolDetectionError e = case e of
+  NoRecognizedProjectFile ->
+    "no stack.yaml, .cabal file or cabal.project found in the project directory"
+  AmbiguousProjectFiles files ->
+    "more than one .cabal file found (" <> Text.intercalate ", " (map Text.pack (toList files))
+      <> ") and no stack.yaml; the build tool cannot be chosen automatically"
+  ProjectDirectoryUnreadable _dir reason ->
+    "the project directory cannot be read: " <> reason

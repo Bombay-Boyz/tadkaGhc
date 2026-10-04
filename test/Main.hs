@@ -31,6 +31,7 @@ import qualified Hedgehog.Gen as Gen
 import qualified Hedgehog.Range as Range
 import Test.Tasty.Hedgehog (testProperty)
 
+import CliTests (cliTests, timeoutTests)
 import Tadka.GHCProtocol.BuildTool
 import Tadka.GHCProtocol.Decode
 import Tadka.GHCProtocol.Diagnostic
@@ -56,6 +57,8 @@ tests = testGroup "tadka-ghc"
   , testGroup "Phase 3: coordinate conversion / source binding" phase3Tests
   , testGroup "Phase 5: Tadka projection" phase5Tests
   , testGroup "Public accessors and human-readable rendering" accessorAndRenderingTests
+  , testGroup "Typed build timeout" timeoutTests
+  , testGroup "Command line" cliTests
   , testGroup "Phase 6: build tool wrapper" phase6Tests
   , testGroup "Phase 7: opaque output capture" phase7Tests
   , testGroup "Phase 8: pure stream semantics" phase8Tests
@@ -1241,7 +1244,8 @@ realSubprocessTests =
         , "main :: IO ()"
         , "main = putStrLn (1 :: Int)"   -- deliberate type error
         ]
-      result <- runBuild (Just 600) Cabal dir (injectDiagnosticsFlag Cabal [])
+      timeout600 <- either (\e -> assertFailure ("mkTimeout 600: " <> show e)) pure (mkTimeout 600)
+      result <- runBuild (Just timeout600) Cabal dir (injectDiagnosticsFlag Cabal [])
       let outcome = classifyBuildOutput result
           diags   = [d | ClassifiedDiagnostic d <- buildClassifications outcome]
           opaque  = [opaqueText o | ClassifiedOpaque o <- buildClassifications outcome]

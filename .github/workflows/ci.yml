@@ -82,7 +82,7 @@ jobs:
       - uses: haskell-actions/hlint-setup@v2
       - uses: haskell-actions/hlint-run@v2
         with:
-          path: '["src/", "process/", "app/", "test/"]'
+          path: '["src/", "process/", "cli/", "app/", "test/"]'
           # Non-blocking on style-only suggestions (severity "suggestion"),
           # blocking on warnings. The partiality ban (spec §0.1) lives in
           # .hlint.yaml as a restricted-functions rule.

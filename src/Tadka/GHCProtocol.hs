@@ -65,6 +65,8 @@ module Tadka.GHCProtocol
   , renderDecodeError
   , renderSourceBindingError
   , renderSourceLookupError
+  , renderTimeoutError
+  , renderBuildToolDetectionError
 
     -- * Build tools
   , BuildTool (..)
@@ -78,6 +80,11 @@ module Tadka.GHCProtocol
   , Signal (..)
   , ProcessError (..)
   , BuildResult (..)
+  , Timeout
+  , TimeoutError (..)
+  , mkTimeout
+  , timeoutMicroseconds
+  , maxTimeoutSeconds
   , OpaqueGhcOutput (..)
   , LineClassification (..)
   , BuildOutcome (..)

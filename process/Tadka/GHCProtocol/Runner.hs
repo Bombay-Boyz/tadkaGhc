@@ -17,7 +17,6 @@ import qualified Data.ByteString as BS
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Data.Time (NominalDiffTime)
 import System.Exit (ExitCode (..))
 import System.IO (Handle)
 import qualified System.Timeout
@@ -40,7 +39,14 @@ import System.Process.Typed
 import Tadka.GHCProtocol.BuildTool
   (BuildTool (..), FramerState, emptyFramerState, feedChunk, flushFramer)
 import Tadka.GHCProtocol.Process
-  (BuildResult (..), CompilerResult (..), OutputStream (..), ProcessError (..), Signal (..))
+  ( BuildResult (..)
+  , CompilerResult (..)
+  , OutputStream (..)
+  , ProcessError (..)
+  , Signal (..)
+  , Timeout
+  , timeoutMicroseconds
+  )
 
 buildToolExecutable :: BuildTool -> String
 buildToolExecutable Cabal = "cabal"
@@ -99,7 +105,7 @@ drainLoop stream h framerRef accumVar = loop
 -- lifecycle) whether this function returns normally, times out, or is
 -- itself the target of an exception -- no file descriptor and no child
 -- process is ever leaked.
-runBuild :: Maybe NominalDiffTime -> BuildTool -> FilePath -> [Text] -> IO BuildResult
+runBuild :: Maybe Timeout -> BuildTool -> FilePath -> [Text] -> IO BuildResult
 runBuild mTimeout tool workDir extraArgs = do
   accumVar     <- newTVarIO []
   outFramerRef <- newIORef emptyFramerState
@@ -128,7 +134,7 @@ runBuild mTimeout tool workDir extraArgs = do
       pure (BuildResult compResult observed)
 
 runLifecycle
-  :: Maybe NominalDiffTime
+  :: Maybe Timeout
   -> Process () Handle Handle
   -> IORef FramerState
   -> IORef FramerState
@@ -142,7 +148,7 @@ runLifecycle mTimeout p outFramerRef errFramerRef accumVar = do
 
   mExitCode <- case mTimeout of
     Nothing  -> Just <$> waitExitCode p
-    Just dur -> System.Timeout.timeout (round (dur * 1000000) :: Int) (waitExitCode p)
+    Just t   -> System.Timeout.timeout (timeoutMicroseconds t) (waitExitCode p)
 
   compResult <- case mExitCode of
     Just ec -> pure (resultFromExitCode ec)
@@ -166,7 +172,7 @@ runLifecycle mTimeout p outFramerRef errFramerRef accumVar = do
 --------------------------------------------------------------------------------
 
 newtype BuildRunner m = BuildRunner
-  { execute :: Maybe NominalDiffTime -> BuildTool -> FilePath -> [Text] -> m BuildResult }
+  { execute :: Maybe Timeout -> BuildTool -> FilePath -> [Text] -> m BuildResult }
 
 ioBuildRunner :: BuildRunner IO
 ioBuildRunner = BuildRunner runBuild

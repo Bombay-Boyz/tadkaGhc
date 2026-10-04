@@ -33,88 +33,15 @@
 --     literal behaviour exactly.
 module Main (main) where
 
-import qualified Data.List as List
-import Data.Time (NominalDiffTime)
-import qualified System.FilePath as FP
-import System.Environment (getArgs)
-import System.Exit (ExitCode (..), exitSuccess, exitWith)
-import System.IO (hPutStrLn, stderr)
 import qualified Data.Text as Text
+import qualified System.FilePath as FP
+import System.Exit (ExitCode (..), exitWith)
+import System.IO (hPutStrLn, stderr)
 import qualified Tadka
-import Text.Read (readMaybe)
 
 import Tadka.GHCProtocol
+import Tadka.GHCProtocol.Cli (CliOptions (..), getCliOptions)
 import Tadka.GHCProtocol.Runner (BuildRunner (..), ioBuildRunner)
-
---------------------------------------------------------------------------------
--- CLI options
---------------------------------------------------------------------------------
-
-data CliOptions = CliOptions
-  { cliDir       :: FilePath
-  , cliTool      :: Maybe BuildTool
-  , cliTarget    :: Maybe Tadka.Target
-  , cliTimeout   :: Maybe NominalDiffTime
-  , cliVerbose   :: Bool
-  , cliExtraArgs :: [Text.Text]
-  }
-
-defaultOptions :: CliOptions
-defaultOptions = CliOptions
-  { cliDir = "."
-  , cliTool = Nothing
-  , cliTarget = Nothing
-  , cliTimeout = Nothing
-  , cliVerbose = False
-  , cliExtraArgs = []
-  }
-
-usage :: String
-usage = unlines
-  [ "tadka-ghc [DIR] [OPTIONS] [-- EXTRA-BUILD-ARGS...]"
-  , ""
-  , "Runs the project's build (cabal build / stack build) with GHC's"
-  , "diagnostics-as-json protocol always enabled, and renders every"
-  , "diagnostic through Tadka."
-  , ""
-  , "  DIR                  project directory (default: .)"
-  , "  --cabal | --stack     force the build tool (default: auto-detect)"
-  , "  --graphical | --narratable | --json"
-  , "                        force the render target (default: auto-detect terminal)"
-  , "  --timeout=SECONDS     kill the build after this many seconds"
-  , "  --verbose, -v         show every captured build-tool line, not just"
-  , "                        decoded diagnostics and (on failure) opaque output"
-  , "  -- ARGS...            everything after -- is passed straight to the build tool"
-  , "  --help, -h            show this message"
-  ]
-
--- | Total: every equation returns either the next state or an explicit
--- 'Left' error; there is no case that silently drops an unrecognized
--- argument.
-parseArgs :: [String] -> Either String CliOptions
-parseArgs = go (defaultOptions, False)
-  where
-    go (opts, _) [] = Right opts
-    go (opts, sawDir) ("--cabal" : rest)      = go (opts { cliTool = Just Cabal }, sawDir) rest
-    go (opts, sawDir) ("--stack" : rest)      = go (opts { cliTool = Just Stack }, sawDir) rest
-    go (opts, sawDir) ("--graphical" : rest)  = go (opts { cliTarget = Just Tadka.TGraphical }, sawDir) rest
-    go (opts, sawDir) ("--narratable" : rest) = go (opts { cliTarget = Just Tadka.TNarratable }, sawDir) rest
-    go (opts, sawDir) ("--json" : rest)       = go (opts { cliTarget = Just Tadka.TJson }, sawDir) rest
-    go (opts, sawDir) ("--verbose" : rest)    = go (opts { cliVerbose = True }, sawDir) rest
-    go (opts, sawDir) ("-v" : rest)           = go (opts { cliVerbose = True }, sawDir) rest
-    go (opts, _) ("--" : rest) =
-      Right opts { cliExtraArgs = cliExtraArgs opts <> map Text.pack rest }
-    go (opts, sawDir) (arg : rest)
-      | Just secsStr <- List.stripPrefix "--timeout=" arg =
-          case readMaybe secsStr :: Maybe Double of
-            Just secs -> go (opts { cliTimeout = Just (realToFrac secs) }, sawDir) rest
-            Nothing   -> Left ("invalid --timeout value: " <> secsStr)
-      | "--" `List.isPrefixOf` arg =
-          Left ("unrecognized option: " <> arg)
-      | not sawDir =
-          go (opts { cliDir = arg }, True) rest
-      | otherwise =
-          Left ("unexpected extra argument: " <> arg <> " (use -- to pass build args)")
 
 --------------------------------------------------------------------------------
 -- Source binding: resolve a GHC-reported path relative to the project
@@ -163,7 +90,9 @@ runTadkaGhc opts = do
   toolResult <- detectBuildTool (cliTool opts) (cliDir opts)
   case toolResult of
     Left err -> do
-      hPutStrLn stderr ("tadka-ghc: could not detect a build tool in " <> cliDir opts <> ": " <> show err)
+      hPutStrLn stderr
+        ("tadka-ghc: could not detect a build tool in " <> cliDir opts <> ": "
+           <> Text.unpack (renderBuildToolDetectionError err))
       exitWith (ExitFailure 1)
     Right tool -> do
       let finalArgs = injectDiagnosticsFlag tool (cliExtraArgs opts)
@@ -177,14 +106,4 @@ runTadkaGhc opts = do
       exitWith (exitCodeFor (buildCompilerResult outcome))
 
 main :: IO ()
-main = do
-  args <- getArgs
-  if "--help" `elem` args || "-h" `elem` args
-    then putStrLn usage >> exitSuccess
-    else case parseArgs args of
-      Left err -> do
-        hPutStrLn stderr ("tadka-ghc: " <> err)
-        hPutStrLn stderr ""
-        hPutStrLn stderr usage
-        exitWith (ExitFailure 2)
-      Right opts -> runTadkaGhc opts
+main = getCliOptions >>= runTadkaGhc

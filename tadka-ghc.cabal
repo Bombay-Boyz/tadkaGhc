@@ -112,9 +112,28 @@ library tadka-ghc-process
     , tadka-ghc
     , typed-process   >=0.2       && <0.3
     , stm             >=2.5       && <2.7
-    , time            >=1.9       && <1.16
     , bytestring      >=0.10.12   && <0.14
     , text            >=2.0.2     && <2.3
+  default-language: Haskell2010
+
+-- Command-line parsing, split out so it can be tested without spawning
+-- the executable and so optparse-applicative stays out of the core
+-- library (audit R5.2).
+library tadka-ghc-cli
+  import:           warnings, extensions
+  hs-source-dirs:   cli
+  exposed-modules:
+    Tadka.GHCProtocol.Cli
+  other-modules:
+    Paths_tadka_ghc
+  autogen-modules:
+    Paths_tadka_ghc
+  build-depends:
+      base                  >=4.20      && <4.23
+    , tadka-ghc
+    , tadka                 >=2.0.0.0   && <2.1
+    , text                  >=2.0.2     && <2.3
+    , optparse-applicative  >=0.17      && <0.20
   default-language: Haskell2010
 
 executable tadka-ghc
@@ -124,10 +143,10 @@ executable tadka-ghc
   build-depends:
       base            >=4.20      && <4.23
     , tadka-ghc
+    , tadka-ghc-cli
     , tadka-ghc-process
     , tadka           >=2.0.0.0   && <2.1
     , text            >=2.0.2     && <2.3
-    , time            >=1.9       && <1.16
     , filepath        >=1.4       && <1.6
   default-language: Haskell2010
 
@@ -136,11 +155,15 @@ test-suite tadka-ghc-test
   type:             exitcode-stdio-1.0
   hs-source-dirs:   test
   main-is:          Main.hs
+  other-modules:
+    CliTests
   build-depends:
       base            >=4.20      && <4.23
     , tadka-ghc
+    , tadka-ghc-cli
     , tadka-ghc-process
     , tadka           >=2.0.0.0   && <2.1
+    , optparse-applicative  >=0.17  && <0.20
     , prettyprinter   >=1.7       && <1.8
     , aeson           >=2.0       && <2.3
     , directory       >=1.3       && <1.5
