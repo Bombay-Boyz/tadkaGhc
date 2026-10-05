@@ -110,6 +110,39 @@ jobs:
         run: |
           cabal test all --test-option='--pattern=real-subprocess'
 
+  consumer-smoke:
+    name: another package can depend on tadka-ghc:tadka-ghc-process (B12)
+    runs-on: ubuntu-24.04
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: haskell-actions/setup@v2
+        with:
+          ghc-version: "9.14.1"
+          cabal-version: "3.12"
+
+      - name: Build a package that depends on the public sublibrary
+        # A private internal library is invisible outside its package, so a
+        # regression of `visibility: public` on tadka-ghc-process only shows
+        # up when a DIFFERENT package tries to use it. This builds one.
+        run: |
+          mkdir -p "$RUNNER_TEMP/consumer/app"
+          cd "$RUNNER_TEMP/consumer"
+          cat > consumer.cabal <<'EOF'
+          cabal-version: 3.0
+          name:          consumer
+          version:       0.1
+          executable consumer
+            main-is:          Main.hs
+            hs-source-dirs:   app
+            build-depends:    base, tadka-ghc:tadka-ghc-process
+            default-language: Haskell2010
+          EOF
+          printf 'module Main (main) where\nmain :: IO ()\nmain = pure ()\n' > app/Main.hs
+          printf 'packages: . %s\n' "$GITHUB_WORKSPACE" > cabal.project
+          cabal build
+
   package-bounds-refresh:
     name: package bounds refresh (scheduled)
     runs-on: ubuntu-24.04

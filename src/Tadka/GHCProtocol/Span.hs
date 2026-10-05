@@ -1,8 +1,7 @@
 -- | Coordinate conversion and source/span binding (vision §16-§20; spec
--- Phase 3), written against tadka's real public API (pinned commit
--- bc750f8, see cabal.project) rather than the vision/spec's assumed
--- signatures. Two concrete deltas from what the spec assumed, resolved
--- here:
+-- Phase 3), written against tadka's real public API (tadka-2.0.0.0 from
+-- Hackage) rather than the vision/spec's assumed signatures. Two
+-- concrete deltas from what the spec assumed, resolved here:
 --
 --   * 'Tadka.mkNamedSource' and 'Tadka.mkContext' both return 'Either'
 --     (the spec assumed bare values for both).
@@ -20,6 +19,7 @@ module Tadka.GHCProtocol.Span
     -- * Span state (§18's table, exactly the states it enumerates)
   , SpanState (..)
   , SourceBindingError (..)
+  , CoordinateError (..)
     -- * Coordinate conversion
   , LineMetadata (..)
   , computeLineMetadata
@@ -32,7 +32,9 @@ module Tadka.GHCProtocol.Span
 import Control.Exception (IOException, try)
 import Data.Bifunctor (first)
 import qualified Data.ByteString as BS
+import Data.Foldable (toList)
 import Data.List.NonEmpty (NonEmpty ((:|)), (<|))
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Text.Encoding (decodeUtf8')
@@ -95,11 +97,25 @@ fileSourceProvider = SourceProvider $ \path -> do
 -- particular is how an out-of-source-bounds span is actually reported,
 -- since tadka's own 'mkContext' does that bounds check, not this module.
 data SourceBindingError
-  = InvalidCoordinates GhcSpan Text
+  = InvalidCoordinates GhcSpan CoordinateError
   | TadkaSpanRejected GhcSpan Tadka.SpanBuildError
   | TadkaSourceRejected GhcSpan Tadka.SourceError
   | TadkaContextRejected GhcSpan Tadka.ContextError
   deriving stock (Show)
+
+-- | Why a (line, column) pair could not be turned into a character
+-- offset in the source that was found. Typed, so a renderer states the
+-- real reason instead of a fixed phrase (audit R3.3).
+data CoordinateError
+  = LineOutOfRange Line
+    -- ^ The source has fewer lines than the span's line number.
+  | ColumnOutOfRange Line Column
+    -- ^ The column lies beyond the end of its line.
+  | ColumnInsideTab Line Column
+    -- ^ The column falls strictly inside a tab character's expansion, so
+    -- it names no character. GHC never reports such a start; seeing one
+    -- means the source differs from what GHC compiled.
+  deriving stock (Eq, Show)
 
 --------------------------------------------------------------------------------
 -- Span state (§18's table, exactly the states it enumerates -- the
@@ -122,12 +138,13 @@ data SpanState
 --------------------------------------------------------------------------------
 
 -- | Per-line metadata: the character offset (0-based) a line starts at,
--- and its content length -- deliberately excluding a trailing '\r' on a
--- CRLF source (§3.1's CRLF decision), so the CR is never reachable as a
--- counted column.
+-- and its text -- deliberately excluding a trailing '\r' on a CRLF
+-- source (§3.1's CRLF decision), so the CR is never reachable as a
+-- counted column. The text is kept because converting a GHC column to
+-- an offset needs the characters before it (a tab is not one column).
 data LineMetadata = LineMetadata
-  { lineStartOffset   :: Int
-  , lineContentLength :: Int
+  { lineStartOffset :: Int
+  , lineContent     :: Text
   } deriving stock (Eq, Show)
 
 -- | Total: '\n' is the sole line separator for counting (§3.1); one
@@ -139,35 +156,64 @@ computeLineMetadata :: Text -> NonEmpty LineMetadata
 computeLineMetadata src = go 0 (Text.splitOn "\n" src)
   where
     go :: Int -> [Text] -> NonEmpty LineMetadata
-    go !offset [l]      = LineMetadata offset (contentLength l) :| []
+    go !offset [l]      = LineMetadata offset (withoutCR l) :| []
     go !offset (l : ls) =
-      let meta     = LineMetadata offset (contentLength l)
+      let meta     = LineMetadata offset (withoutCR l)
           consumed = Text.length l + 1  -- +1 for the '\n' just split on
       in meta <| go (offset + consumed) ls
     go !offset []       =
-      LineMetadata offset 0 :| []  -- unreachable: splitOn never returns []
+      LineMetadata offset "" :| []  -- unreachable: splitOn never returns []
 
-    contentLength :: Text -> Int
-    contentLength l
-      | Text.isSuffixOf "\r" l = Text.length l - 1
-      | otherwise              = Text.length l
+    withoutCR :: Text -> Text
+    withoutCR l = fromMaybe l (Text.stripSuffix "\r" l)
 
--- | Total: converts a 1-based (Line, Column) pair into a 0-based
--- character offset. The endpoint convention (§3.1) is exclusive -- one
--- position past the last content character is legal, representing
--- "end of this line's content" -- so the bound checked is
--- @column - 1 > lineContentLength@, not @>=@.
-coordinateToOffset :: NonEmpty LineMetadata -> Line -> Column -> Either Text Int
+-- | Total: converts a 1-based (Line, Column) pair, as GHC reports it,
+-- into a 0-based character offset.
+--
+-- GHC's column rules, confirmed against real GHC 9.14.1 output (see
+-- test/fixtures/coordinate/tab-real-*):
+--
+--   * columns count Unicode characters, not bytes;
+--   * a tab advances the column to the next multiple of 8, plus 1
+--     (GHC's @advanceSrcLoc@ tab-stop rule), so a tab at column 1 is
+--     followed by a character at column 9;
+--   * the end of a span is exclusive: one position past its last
+--     character (§3.1), so the column just past the end of a line's
+--     content is legal.
+coordinateToOffset :: NonEmpty LineMetadata -> Line -> Column -> Either CoordinateError Int
 coordinateToOffset lineMeta line col =
-  case drop (l - 1) (toListNE lineMeta) of
-    [] -> Left "line number exceeds source"
-    (LineMetadata start len : _)
-      | c - 1 > len -> Left "column exceeds line length"
-      | otherwise   -> Right (start + c - 1)
+  case drop (unLine line - 1) (toList lineMeta) of
+    []                               -> Left (LineOutOfRange line)
+    (LineMetadata start content : _) ->
+      case columnToIndex content (unColumn col) of
+        Right i            -> Right (start + i)
+        Left BeyondLine    -> Left (ColumnOutOfRange line col)
+        Left InsideTabStop -> Left (ColumnInsideTab line col)
+
+data ColumnProblem = BeyondLine | InsideTabStop
+
+-- | The 0-based index of the character that starts at the given 1-based
+-- GHC column, or one past the last character if the column is exactly
+-- the exclusive end of the line. Total: each step raises the running
+-- column by at least 1, so the walk ends when the column reaches or
+-- passes the target or the line runs out.
+columnToIndex :: Text -> Int -> Either ColumnProblem Int
+columnToIndex content target = go 0 1 (Text.unpack content)
   where
-    l = unLine line
-    c = unColumn col
-    toListNE (x :| xs) = x : xs
+    go :: Int -> Int -> String -> Either ColumnProblem Int
+    go !i !c cs
+      | c == target = Right i
+      | c >  target = Left InsideTabStop  -- only a tab can skip columns
+      | otherwise   = case cs of
+          []        -> Left BeyondLine
+          ch : rest -> go (i + 1) (advance ch c) rest
+
+    advance :: Char -> Int -> Int
+    advance '\t' c = ((c - 1) `div` tabStop + 1) * tabStop + 1
+    advance _    c = c + 1
+
+    tabStop :: Int
+    tabStop = 8
 
 --------------------------------------------------------------------------------
 -- Binding: GhcSpan + real source text -> a real Tadka.Context.

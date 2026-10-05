@@ -1,0 +1,20 @@
+module Tab where
+
+z :: Int
+z = "s"
+
+a :: Int
+a = 	"s"
+
+b :: Int
+b =
+	"s"
+
+c :: Int
+c = 1+	"s"
+
+d :: Int
+d = 1 + 	"s"
+
+e :: (Char, Int)
+e=('é',	"s")

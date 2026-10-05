@@ -102,8 +102,12 @@ library
 
 -- Process-execution component: the only place typed-process is a
 -- dependency (spec Phase 6.4/I-35).
+-- Public so other packages can depend on 'tadka-ghc:tadka-ghc-process' (a
+-- private internal library is invisible outside this package: audit B12,
+-- confirmed with a consumer build).
 library tadka-ghc-process
   import:           warnings, extensions
+  visibility:       public
   hs-source-dirs:   process
   exposed-modules:
     Tadka.GHCProtocol.Runner
@@ -157,6 +161,7 @@ test-suite tadka-ghc-test
   main-is:          Main.hs
   other-modules:
     CliTests
+    CoordinateTests
   build-depends:
       base            >=4.20      && <4.23
     , tadka-ghc

@@ -42,7 +42,8 @@ import Tadka.GHCProtocol.BuildTool (BuildToolDetectionError (..))
 import Tadka.GHCProtocol.Process (TimeoutError (..), maxTimeoutSeconds)
 import Tadka.GHCProtocol.Schema (unSchemaVersion)
 import Tadka.GHCProtocol.Span
-  ( SourceBindingError (..)
+  ( CoordinateError (..)
+  , SourceBindingError (..)
   , SourceLookupError (..)
   , SpanState (..)
   )
@@ -181,13 +182,26 @@ renderDecodeError e = case e of
 renderSourceBindingError :: SourceBindingError -> Text
 renderSourceBindingError e = case e of
   InvalidCoordinates sp reason ->
-    "invalid coordinates in " <> renderGhcSpan sp <> ": " <> reason
+    "invalid coordinates in " <> renderGhcSpan sp <> ": " <> describeCoordinateError reason
   TadkaSpanRejected sp err ->
     "tadka rejected the span for " <> renderGhcSpan sp <> ": " <> describeSpanBuildError err
   TadkaSourceRejected sp err ->
     "tadka rejected the source name for " <> renderGhcSpan sp <> ": " <> describeSourceError err
   TadkaContextRejected sp err ->
     "span out of bounds against real source for " <> renderGhcSpan sp <> ": " <> describeContextError err
+
+describeCoordinateError :: CoordinateError -> Text
+describeCoordinateError e = case e of
+  LineOutOfRange l ->
+    "line " <> showInt (unLine l) <> " is beyond the end of the source"
+  ColumnOutOfRange l c ->
+    "column " <> showInt (unColumn c) <> " is beyond the end of line " <> showInt (unLine l)
+  ColumnInsideTab l c ->
+    "column " <> showInt (unColumn c) <> " of line " <> showInt (unLine l)
+      <> " falls inside a tab character (a tab advances to the next multiple-of-8 column), so the source may differ from what GHC compiled"
+  where
+    showInt :: Int -> Text
+    showInt = Text.pack . show
 
 -- tadka's error types derive only 'Show' and expose no public renderer, so
 -- each constructor gets a fixed, documented sentence here instead of

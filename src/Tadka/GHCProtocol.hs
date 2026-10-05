@@ -52,6 +52,7 @@ module Tadka.GHCProtocol
   , fileSourceProvider
   , SpanState (..)
   , SourceBindingError (..)
+  , CoordinateError (..)
   , convertSpan
   , bindSpan
 

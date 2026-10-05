@@ -32,6 +32,7 @@ import qualified Hedgehog.Range as Range
 import Test.Tasty.Hedgehog (testProperty)
 
 import CliTests (cliTests, timeoutTests)
+import CoordinateTests (tabTests)
 import Tadka.GHCProtocol.BuildTool
 import Tadka.GHCProtocol.Decode
 import Tadka.GHCProtocol.Diagnostic
@@ -59,6 +60,7 @@ tests = testGroup "tadka-ghc"
   , testGroup "Public accessors and human-readable rendering" accessorAndRenderingTests
   , testGroup "Typed build timeout" timeoutTests
   , testGroup "Command line" cliTests
+  , testGroup "Tab columns and GHC coordinate conventions" tabTests
   , testGroup "Phase 6: build tool wrapper" phase6Tests
   , testGroup "Phase 7: opaque output capture" phase7Tests
   , testGroup "Phase 8: pure stream semantics" phase8Tests
@@ -310,19 +312,19 @@ phase3Tests =
   [ testCase "computeLineMetadata: two plain lines" $ do
       let meta = computeLineMetadata "abc\ndef"
       case meta of
-        (LineMetadata 0 3) :| [LineMetadata 4 3] -> pure ()
+        (LineMetadata 0 "abc") :| [LineMetadata 4 "def"] -> pure ()
         other -> assertFailure ("unexpected metadata: " <> show other)
 
   , testCase "computeLineMetadata: CRLF excludes \\r from line content (§3.1)" $ do
       let meta = computeLineMetadata "abc\r\ndef"
       case meta of
-        (LineMetadata 0 3) :| [LineMetadata 5 3] -> pure ()
+        (LineMetadata 0 "abc") :| [LineMetadata 5 "def"] -> pure ()
         other -> assertFailure ("unexpected metadata: " <> show other)
 
   , testCase "computeLineMetadata: trailing newline yields an empty final line" $ do
       let meta = computeLineMetadata "abc\n"
       case meta of
-        (LineMetadata 0 3) :| [LineMetadata 4 0] -> pure ()
+        (LineMetadata 0 "abc") :| [LineMetadata 4 ""] -> pure ()
         other -> assertFailure ("unexpected metadata: " <> show other)
 
   , testCase "coordinateToOffset: first character of first line is offset 0" $ do
@@ -342,16 +344,16 @@ phase3Tests =
       l <- either (assertFailure . show) pure (mkLine 99)
       c <- either (assertFailure . show) pure (mkColumn 1)
       case coordinateToOffset meta l c of
-        Left _  -> pure ()
-        Right o -> assertFailure ("expected Left, got offset " <> show o)
+        Left (LineOutOfRange _) -> pure ()
+        other -> assertFailure ("expected LineOutOfRange, got " <> show other)
 
   , testCase "coordinateToOffset: column beyond line length fails" $ do
       let meta = computeLineMetadata "abc\ndef"
       l <- either (assertFailure . show) pure (mkLine 1)
       c <- either (assertFailure . show) pure (mkColumn 99)
       case coordinateToOffset meta l c of
-        Left _  -> pure ()
-        Right o -> assertFailure ("expected Left, got offset " <> show o)
+        Left (ColumnOutOfRange _ _) -> pure ()
+        other -> assertFailure ("expected ColumnOutOfRange, got " <> show other)
 
   , testCase "coordinateToOffset: exclusive end-of-line column is legal (§3.1)" $ do
       let meta = computeLineMetadata "abc\ndef"
@@ -491,7 +493,7 @@ phase5Tests =
                 [ NoSpan
                 , SpanNoSource sp
                 , SpanSourceUnavailable sp (SourceIOError "boom")
-                , SpanInvalidCoordinates sp (InvalidCoordinates sp "bad")
+                , SpanInvalidCoordinates sp (InvalidCoordinates sp (LineOutOfRange (spanStartLine sp)))
                 ]
           mapM_
             (\st -> case Tadka.context (BoundGhcDiagnostic d st) of
@@ -504,7 +506,7 @@ phase5Tests =
 
   , testCase "renderSourceBindingError is total and human-readable" $ do
       sp <- buildSpanIO "Foo.hs" 1 1 1 2
-      assertBool "non-empty" (renderSourceBindingError (InvalidCoordinates sp "x") /= "")
+      assertBool "non-empty" (renderSourceBindingError (InvalidCoordinates sp (LineOutOfRange (spanStartLine sp))) /= "")
   ]
 --------------------------------------------------------------------------------
 -- Public accessors and human-readable rendering (audit B8, B10, B14)
@@ -573,7 +575,7 @@ accessorAndRenderingTests =
       srcErr  <- leftOrFail "empty source name" (Tadka.mkNamedSource "" "x")
       ctxErr  <- outOfBoundsContextError
       let rendered =
-            [ renderSourceBindingError (InvalidCoordinates sp "bad")
+            [ renderSourceBindingError (InvalidCoordinates sp (LineOutOfRange (spanStartLine sp)))
             , renderSourceBindingError (TadkaSpanRejected sp offErr)
             , renderSourceBindingError (TadkaSpanRejected sp lenErr)
             , renderSourceBindingError (TadkaSourceRejected sp srcErr)
@@ -1092,7 +1094,9 @@ goldenTests =
 coordinateFixtureNames :: [String]
 coordinateFixtureNames =
   [ "first-char", "same-line", "multi-line", "eol", "final-char", "empty-span"
-  , "unicode", "crlf", "tabs", "invalid", "out-of-range" ]
+  , "unicode", "crlf", "invalid", "out-of-range"
+  , "tab-real-baseline", "tab-real-col1", "tab-real-col5", "tab-real-col7"
+  , "tab-real-col9", "tab-real-multibyte" ]
 
 coordinateFixtureTest :: String -> TestTree
 coordinateFixtureTest name = testCase ("coordinate fixture: " <> name) $ do
@@ -1170,7 +1174,7 @@ prop_crlf_matches_lf_line_content = property $ do
   ls <- forAll (Gen.list (Range.linear 1 6) (Gen.text (Range.linear 0 8) Gen.alpha))
   let lf   = computeLineMetadata (Text.intercalate "\n" ls)
       crlf = computeLineMetadata (Text.intercalate "\r\n" ls)
-  map lineContentLength (toList crlf) === map lineContentLength (toList lf)
+  map lineContent (toList crlf) === map lineContent (toList lf)
 
 prop_feedChunk_split_invariant :: Property
 prop_feedChunk_split_invariant = property $ do
