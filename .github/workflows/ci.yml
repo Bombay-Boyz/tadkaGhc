@@ -32,6 +32,7 @@ jobs:
   build-and-test:
     name: build & test (fake BuildRunner) — GHC ${{ matrix.ghc }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -77,6 +78,7 @@ jobs:
   hlint:
     name: hlint
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
       - uses: haskell-actions/hlint-setup@v2
@@ -91,6 +93,7 @@ jobs:
   real-subprocess-integration:
     name: real ioBuildRunner integration (newest supported GHC only)
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     needs: build-and-test
     steps:
       - uses: actions/checkout@v6
@@ -113,6 +116,7 @@ jobs:
   consumer-smoke:
     name: another package can depend on tadka-ghc:tadka-ghc-process (B12)
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     needs: build-and-test
     steps:
       - uses: actions/checkout@v6
@@ -146,6 +150,7 @@ jobs:
   package-bounds-refresh:
     name: package bounds refresh (scheduled)
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     if: github.event_name == 'schedule'
     steps:
       - uses: actions/checkout@v6
