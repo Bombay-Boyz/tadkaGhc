@@ -50,6 +50,7 @@ module Tadka.GHCProtocol
   , SourceProvider (..)
   , SourceLookupError (..)
   , fileSourceProvider
+  , projectSourceProvider
   , SpanState (..)
   , SourceBindingError (..)
   , CoordinateError (..)
@@ -66,6 +67,7 @@ module Tadka.GHCProtocol
   , renderDecodeError
   , renderSourceBindingError
   , renderSourceLookupError
+  , renderSpanStateNote
   , renderTimeoutError
   , renderBuildToolDetectionError
 
@@ -80,6 +82,7 @@ module Tadka.GHCProtocol
   , CompilerResult (..)
   , Signal (..)
   , ProcessError (..)
+  , renderCompilerResult
   , BuildResult (..)
   , Timeout
   , TimeoutError (..)

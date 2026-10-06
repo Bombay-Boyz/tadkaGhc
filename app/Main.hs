@@ -33,8 +33,10 @@
 --     literal behaviour exactly.
 module Main (main) where
 
+import Control.Monad (forM_, unless)
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import qualified Data.Text as Text
-import qualified System.FilePath as FP
+import System.Directory (doesDirectoryExist)
 import System.Exit (ExitCode (..), exitWith)
 import System.IO (hPutStrLn, stderr)
 import qualified Tadka
@@ -44,13 +46,11 @@ import Tadka.GHCProtocol.Cli (CliOptions (..), getCliOptions)
 import Tadka.GHCProtocol.Runner (BuildRunner (..), ioBuildRunner)
 
 --------------------------------------------------------------------------------
--- Source binding: resolve a GHC-reported path relative to the project
--- directory being built, not this process's own working directory.
+-- Source binding: GHC-reported paths are resolved across the project's
+-- package roots by 'projectSourceProvider' (library), never by joining
+-- them onto the project directory alone, and an ambiguous path is
+-- refused rather than guessed (audit D3).
 --------------------------------------------------------------------------------
-
-projectSourceProvider :: FilePath -> SourceProvider IO
-projectSourceProvider dir = SourceProvider $ \path ->
-  lookupSource fileSourceProvider (if FP.isAbsolute path then path else dir FP.</> path)
 
 --------------------------------------------------------------------------------
 -- Reporting
@@ -65,12 +65,25 @@ shouldReport :: Bool -> CompilerResult -> LineClassification -> Bool
 shouldReport _       _      (ClassifiedDiagnostic _) = True
 shouldReport verbose result (ClassifiedOpaque _)      = verbose || result /= CompilerSucceeded
 
-reportClassification :: Tadka.Config -> SourceProvider IO -> LineClassification -> IO ()
-reportClassification cfg provider (ClassifiedDiagnostic d) = do
+-- | A diagnostic is always shown. When it has a location but no source
+-- excerpt, one note on stderr says why (never silently omitted). Notes go
+-- to stderr, so a machine-readable stdout (--json) is never polluted, and
+-- each distinct note is printed once per run, not once per diagnostic.
+reportClassification
+  :: Tadka.Config -> SourceProvider IO -> IORef [Text.Text] -> LineClassification -> IO ()
+reportClassification cfg provider notesSeen (ClassifiedDiagnostic d) = do
   spanState <- bindSpan provider (ghcSpan d)
   Tadka.reportDiagnostic cfg (BoundGhcDiagnostic d spanState)
-reportClassification cfg _ (ClassifiedOpaque o) =
+  forM_ (renderSpanStateNote spanState) (noteOnce notesSeen)
+reportClassification cfg _ _ (ClassifiedOpaque o) =
   Tadka.reportDiagnostic cfg o
+
+noteOnce :: IORef [Text.Text] -> Text.Text -> IO ()
+noteOnce ref note = do
+  seen <- readIORef ref
+  unless (note `elem` seen) $ do
+    writeIORef ref (note : seen)
+    hPutStrLn stderr ("tadka-ghc: note: " <> Text.unpack note)
 
 -- | Total: one equation per 'CompilerResult' constructor. Exit codes
 -- follow common shell conventions where one exists (124 for timeout,
@@ -87,6 +100,13 @@ exitCodeFor (CompilerStartFailed _) = ExitFailure 127
 
 runTadkaGhc :: CliOptions -> IO ()
 runTadkaGhc opts = do
+  -- Checked first: with --cabal/--stack there is no detection step to
+  -- notice a missing directory, and the process library's own error for
+  -- a bad working directory is cryptic.
+  dirExists <- doesDirectoryExist (cliDir opts)
+  unless dirExists $ do
+    hPutStrLn stderr ("tadka-ghc: the project directory does not exist: " <> cliDir opts)
+    exitWith (ExitFailure 2)
   toolResult <- detectBuildTool (cliTool opts) (cliDir opts)
   case toolResult of
     Left err -> do
@@ -99,10 +119,11 @@ runTadkaGhc opts = do
       buildResult <- execute ioBuildRunner (cliTimeout opts) tool (cliDir opts) finalArgs
       let outcome  = classifyBuildOutput buildResult
           cfg      = maybe Tadka.defaultConfig (\t -> Tadka.withTarget t Tadka.defaultConfig) (cliTarget opts)
-          provider = projectSourceProvider (cliDir opts)
           toShow   = filter (shouldReport (cliVerbose opts) (buildCompilerResult outcome))
                             (buildClassifications outcome)
-      mapM_ (reportClassification cfg provider) toShow
+      provider  <- projectSourceProvider (cliDir opts)
+      notesSeen <- newIORef []
+      mapM_ (reportClassification cfg provider notesSeen) toShow
       exitWith (exitCodeFor (buildCompilerResult outcome))
 
 main :: IO ()

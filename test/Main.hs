@@ -33,6 +33,7 @@ import Test.Tasty.Hedgehog (testProperty)
 
 import CliTests (cliTests, timeoutTests)
 import CoordinateTests (tabTests)
+import SourceResolutionTests (sourceResolutionTests)
 import Tadka.GHCProtocol.BuildTool
 import Tadka.GHCProtocol.Decode
 import Tadka.GHCProtocol.Diagnostic
@@ -61,6 +62,7 @@ tests = testGroup "tadka-ghc"
   , testGroup "Typed build timeout" timeoutTests
   , testGroup "Command line" cliTests
   , testGroup "Tab columns and GHC coordinate conventions" tabTests
+  , testGroup "Source path resolution across packages" sourceResolutionTests
   , testGroup "Phase 6: build tool wrapper" phase6Tests
   , testGroup "Phase 7: opaque output capture" phase7Tests
   , testGroup "Phase 8: pure stream semantics" phase8Tests

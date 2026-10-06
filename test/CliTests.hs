@@ -8,6 +8,7 @@ module CliTests
 
 import Data.List (isInfixOf, isPrefixOf)
 import Data.List.NonEmpty (NonEmpty ((:|)))
+import Data.Maybe (isJust)
 import qualified Data.Text as Text
 import Hedgehog (assert, forAll, property, (===))
 import qualified Hedgehog.Gen as Gen
@@ -21,6 +22,7 @@ import Test.Tasty.Hedgehog (testProperty)
 
 import Tadka.GHCProtocol
 import Tadka.GHCProtocol.Cli
+import Tadka.GHCProtocol.Opaque (opaqueMessage)
 
 --------------------------------------------------------------------------------
 -- mkTimeout
@@ -171,6 +173,37 @@ cliTests =
         , ["--bogus"]
         , ["one", "two"]
         ]
+
+  , testCase "every way a build can fail has a plain sentence; success has none" $ do
+      renderCompilerResult CompilerSucceeded @?= Nothing
+      renderCompilerResult (CompilerFailed (ExitFailure 2))
+        @?= Just "the build failed with exit status 2"
+      renderCompilerResult (CompilerSignalled (Signal 9))
+        @?= Just "the build was killed by signal 9"
+      renderCompilerResult CompilerTimedOut
+        @?= Just "the build did not finish within the timeout and was stopped"
+      renderCompilerResult (CompilerStartFailed (ProcessError "cabal: does not exist"))
+        @?= Just "the build tool could not be started: cabal: does not exist"
+      assertBool "an ExitSuccess 'failure' is still explained"
+        (isJust (renderCompilerResult (CompilerFailed ExitSuccess)))
+
+  , testCase "a failed build with no output shows its cause, never a blank error (blank 'error:' bug)" $ do
+      let startFailed = CompilerStartFailed (ProcessError "cabal: createProcess: does not exist")
+      case buildClassifications (classifyBuildOutput (BuildResult startFailed [])) of
+        [ClassifiedOpaque o] ->
+          opaqueMessage o @?= "the build tool could not be started: cabal: createProcess: does not exist"
+        other -> assertFailure ("expected exactly one synthetic record, got " <> show other)
+      case buildClassifications (classifyBuildOutput (BuildResult CompilerTimedOut [])) of
+        [ClassifiedOpaque o] ->
+          opaqueMessage o @?= "the build did not finish within the timeout and was stopped"
+        other -> assertFailure ("expected exactly one synthetic record, got " <> show other)
+
+  , testCase "captured text is shown as is; the cause replaces only empty or blank text" $ do
+      let failed = Just (CompilerFailed (ExitFailure 1))
+      opaqueMessage (OpaqueGhcOutput StdErr "x" "real build output" failed) @?= "real build output"
+      opaqueMessage (OpaqueGhcOutput StdErr "  " "  " failed) @?= "the build failed with exit status 1"
+      opaqueMessage (OpaqueGhcOutput StdErr "" "" (Just CompilerSucceeded)) @?= ""
+      opaqueMessage (OpaqueGhcOutput StdErr "" "" Nothing) @?= ""
 
   , testCase "build-tool detection errors read as plain English (B14)" $ do
       let none      = renderBuildToolDetectionError NoRecognizedProjectFile

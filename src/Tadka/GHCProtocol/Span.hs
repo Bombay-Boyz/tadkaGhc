@@ -16,6 +16,11 @@ module Tadka.GHCProtocol.Span
   , SourceProvider (..)
   , SourceLookupError (..)
   , fileSourceProvider
+    -- * Resolving GHC-reported paths within a project (audit D3)
+  , projectSourceProvider
+  , PathResolution (..)
+  , discoverPackageRoots
+  , resolveSpanPath
     -- * Span state (§18's table, exactly the states it enumerates)
   , SpanState (..)
   , SourceBindingError (..)
@@ -30,14 +35,27 @@ module Tadka.GHCProtocol.Span
   ) where
 
 import Control.Exception (IOException, try)
+import Control.Monad (filterM)
 import Data.Bifunctor (first)
 import qualified Data.ByteString as BS
+import Data.Either (fromRight)
 import Data.Foldable (toList)
+import Data.Function (on)
+import Data.List (isPrefixOf, isSuffixOf, nubBy, sort)
 import Data.List.NonEmpty (NonEmpty ((:|)), (<|))
+import qualified Data.List.NonEmpty as NE
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Text.Encoding (decodeUtf8')
+import System.Directory
+  ( canonicalizePath
+  , doesDirectoryExist
+  , doesFileExist
+  , listDirectory
+  , pathIsSymbolicLink
+  )
+import System.FilePath (isAbsolute, makeRelative, normalise, (</>))
 import System.IO.Error (isDoesNotExistError)
 
 import qualified Tadka
@@ -58,6 +76,11 @@ newtype SourceText = SourceText Text
 data SourceLookupError
   = SourceIOError Text
   | SourceInvalidEncoding Text
+  | SourceAmbiguousPath FilePath (NonEmpty FilePath)
+    -- ^ The path GHC reported is relative to a package, and more than one
+    -- package in the project has a file at that path. Carries the path as
+    -- reported and every candidate (relative to the project directory).
+    -- No file is guessed: a wrong excerpt is worse than none.
   deriving stock (Eq, Show)
 
 -- | Explicit, caller-supplied capability: tadka-ghc never reaches for
@@ -83,6 +106,124 @@ fileSourceProvider = SourceProvider $ \path -> do
     Right bytes -> case decodeUtf8' bytes of
       Left ue -> pure (Left (SourceInvalidEncoding (Text.pack (show ue))))
       Right t -> pure (Right (Just (SourceText t)))
+
+--------------------------------------------------------------------------------
+-- Resolving GHC-reported paths within a project (audit D3).
+--
+-- Real GHC output (captured on 9.14.1 with a two-package cabal project)
+-- reports a path RELATIVE TO THE PACKAGE being built, for example
+-- @src/Lib.hs@ for @b/src/Lib.hs@. Resolving it against the project
+-- directory alone binds the wrong file whenever another file happens to
+-- sit at that path (a decoy at the project root displayed its own line
+-- 4 as the excerpt for package b's error). So a relative path is looked
+-- up in every package root of the project and is only used if exactly one
+-- file answers.
+--------------------------------------------------------------------------------
+
+-- | The outcome of looking a GHC-reported path up across package roots.
+data PathResolution
+  = Resolved FilePath
+  | NotFound
+  | Ambiguous (NonEmpty FilePath)
+  deriving stock (Eq, Show)
+
+-- | The directories under a project that look like package roots: those
+-- containing a @*.cabal@ file or a @package.yaml@. Returned sorted.
+--
+-- Bounded so it cannot run away on a huge tree: at most 'maxScanDepth'
+-- levels below the project directory and 'maxScanDirectories'
+-- directories. Hidden directories, @dist-newstyle@, @dist@ and
+-- @node_modules@ are skipped, and symbolic links to directories are not
+-- followed (no cycles). A package outside those bounds is not found; the
+-- consequence is a missing excerpt or, rarely, a unique-but-wrong match,
+-- never a crash.
+discoverPackageRoots :: FilePath -> IO [FilePath]
+discoverPackageRoots top = sort <$> walk [(top, 0)] 0 []
+  where
+    walk :: [(FilePath, Int)] -> Int -> [FilePath] -> IO [FilePath]
+    walk [] _ found = pure found
+    walk ((dir, depth) : rest) visited found
+      | visited >= maxScanDirectories = pure found
+      | otherwise = do
+          entries <- fromRight [] <$> (try (listDirectory dir) :: IO (Either IOException [FilePath]))
+          isRoot  <- anyM (\e -> isPackageFile e `andM` doesFileExist (dir </> e)) entries
+          subdirs <- if depth >= maxScanDepth
+                       then pure []
+                       else filterM (\e -> isRealDirectory (dir </> e)) (filter descendInto entries)
+          walk ([(dir </> d, depth + 1) | d <- subdirs] ++ rest)
+               (visited + 1)
+               (if isRoot then dir : found else found)
+
+    isPackageFile :: FilePath -> Bool
+    isPackageFile e = (".cabal" `isSuffixOf` e && e /= ".cabal") || e == "package.yaml"
+
+    descendInto :: FilePath -> Bool
+    descendInto e = not ("." `isPrefixOf` e) && e `notElem` ["dist-newstyle", "dist", "node_modules"]
+
+    isRealDirectory :: FilePath -> IO Bool
+    isRealDirectory p = do
+      isDir <- doesDirectoryExist p
+      if not isDir
+        then pure False
+        else either (const True) not <$> (try (pathIsSymbolicLink p) :: IO (Either IOException Bool))
+
+    anyM :: (a -> IO Bool) -> [a] -> IO Bool
+    anyM _ []       = pure False
+    anyM f (x : xs) = f x >>= \b -> if b then pure True else anyM f xs
+
+    andM :: Bool -> IO Bool -> IO Bool
+    andM False _ = pure False
+    andM True  m = m
+
+-- | How deep below the project directory package roots are looked for.
+maxScanDepth :: Int
+maxScanDepth = 6
+
+-- | The most directories visited while looking for package roots.
+maxScanDirectories :: Int
+maxScanDirectories = 20000
+
+-- | Look a path up across the given package roots. An absolute path is
+-- used as is (it names exactly one file). A relative path is tried under
+-- every root; candidates that are the same file (reached through
+-- symbolic links or @..@) count once. Exactly one file gives 'Resolved',
+-- none gives 'NotFound', and several give 'Ambiguous' (sorted) with no
+-- file chosen.
+resolveSpanPath :: [FilePath] -> FilePath -> IO PathResolution
+resolveSpanPath roots path
+  | isAbsolute path = do
+      exists <- doesFileExist path
+      pure (if exists then Resolved path else NotFound)
+  | otherwise = do
+      existing <- filterM doesFileExist [root </> path | root <- roots]
+      keyed    <- mapM (\p -> (,) <$> canonical p <*> pure p) existing
+      pure $ case sort (map snd (nubBy ((==) `on` fst) keyed)) of
+        []       -> NotFound
+        [p]      -> Resolved p
+        (p : ps) -> Ambiguous (p :| ps)
+  where
+    canonical :: FilePath -> IO FilePath
+    canonical p = fromRight p <$> (try (canonicalizePath p) :: IO (Either IOException FilePath))
+
+-- | A source provider for a project directory: finds the package roots
+-- once, then resolves every GHC-reported path across them. A path that
+-- is ambiguous across packages yields 'SourceAmbiguousPath' rather than a
+-- guess. With no package roots found at all, the project directory
+-- itself is the only root.
+projectSourceProvider :: FilePath -> IO (SourceProvider IO)
+projectSourceProvider dir = do
+  found <- discoverPackageRoots dir
+  let roots = if null found then [dir] else found
+  pure $ SourceProvider $ \path -> do
+    resolution <- resolveSpanPath roots path
+    case resolution of
+      Resolved file    -> lookupSource fileSourceProvider file
+      NotFound         -> pure (Right Nothing)
+      Ambiguous (c :| cs) ->
+        pure (Left (SourceAmbiguousPath path (NE.map display (c :| cs))))
+  where
+    display :: FilePath -> FilePath
+    display = makeRelative (normalise dir) . normalise
 
 --------------------------------------------------------------------------------
 -- Source-binding errors, reflecting tadka's real (Either-returning) API.

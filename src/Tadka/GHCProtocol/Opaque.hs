@@ -20,6 +20,7 @@ module Tadka.GHCProtocol.Opaque
     -- * Whole-build classification
   , BuildOutcome (..)
   , classifyBuildOutput
+  , opaqueMessage
   , attachCompilerResult
   ) where
 
@@ -28,6 +29,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as NE
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Text.Encoding (decodeUtf8Lenient)
@@ -35,7 +37,12 @@ import Prettyprinter (pretty)
 import qualified Tadka
 
 import Tadka.GHCProtocol.Decode (decodeDiagnosticLine)
-import Tadka.GHCProtocol.Process (BuildResult (..), CompilerResult (..), OutputStream (..))
+import Tadka.GHCProtocol.Process
+  ( BuildResult (..)
+  , CompilerResult (..)
+  , OutputStream (..)
+  , renderCompilerResult
+  )
 import Tadka.GHCProtocol.Types (GhcDiagnostic)
 
 --------------------------------------------------------------------------------
@@ -215,4 +222,15 @@ attachCompilerResult result            cs = map attach cs
 
 instance Tadka.Diagnostic OpaqueGhcOutput where
   severity _ = Tadka.SevError
-  message o  = pretty (opaqueText o)
+  message o  = pretty (opaqueMessage o)
+
+-- | The text shown for a record: the captured text itself, except for the
+-- synthetic record introduced when a build failed with no output at all.
+-- That record has no text, and rendering it as-is would print a bare
+-- "error:", losing the failure; so there the real cause (exit status,
+-- signal, timeout, or why the build tool could not be started) is shown.
+opaqueMessage :: OpaqueGhcOutput -> Text
+opaqueMessage o
+  | Text.null (Text.strip (opaqueText o)) =
+      fromMaybe (opaqueText o) (opaqueCompilerResult o >>= renderCompilerResult)
+  | otherwise = opaqueText o

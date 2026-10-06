@@ -28,6 +28,7 @@ module Tadka.GHCProtocol.Diagnostic
   , renderDecodeError
   , renderSourceBindingError
   , renderSourceLookupError
+  , renderSpanStateNote
   , renderTimeoutError
   , renderBuildToolDetectionError
   ) where
@@ -232,6 +233,31 @@ renderSourceLookupError :: SourceLookupError -> Text
 renderSourceLookupError e = case e of
   SourceIOError msg         -> "source lookup failed: " <> msg
   SourceInvalidEncoding msg -> "source is not valid text: " <> msg
+  SourceAmbiguousPath path candidates ->
+    "\"" <> Text.pack path <> "\" exists in more than one package ("
+      <> Text.intercalate ", " (map Text.pack (toList candidates))
+      <> "), so no file was chosen"
+
+-- | Why a diagnostic that reports a source location carries no source
+-- excerpt, as one sentence naming the file; 'Nothing' when it has an
+-- excerpt, when it has no location at all, or when the \"file\" is not a
+-- file (GHC's @<interactive>@ style pseudo-names). Lets a front end say
+-- WHY an excerpt is missing instead of silently omitting it.
+renderSpanStateNote :: SpanState -> Maybe Text
+renderSpanStateNote st = case st of
+  SpanBound _ -> Nothing
+  NoSpan      -> Nothing
+  SpanNoSource sp
+    | isPseudoFile sp -> Nothing
+    | otherwise       -> Just (prefix sp <> "the file was not found in the project")
+  SpanSourceUnavailable sp e
+    | isPseudoFile sp -> Nothing
+    | otherwise       -> Just (prefix sp <> renderSourceLookupError e)
+  SpanInvalidCoordinates sp e ->
+    Just (prefix sp <> renderSourceBindingError e)
+  where
+    prefix sp = "source excerpt omitted for " <> Text.pack (spanFile sp) <> ": "
+    isPseudoFile sp = "<" `Text.isPrefixOf` Text.pack (spanFile sp)
 
 -- | Why a timeout value was rejected, as a phrase that completes
 -- "timeout ...", for example "timeout must be greater than 0".

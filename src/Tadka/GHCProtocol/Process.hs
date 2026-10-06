@@ -8,6 +8,7 @@ module Tadka.GHCProtocol.Process
   , CompilerResult (..)
   , Signal (..)
   , ProcessError (..)
+  , renderCompilerResult
   , BuildResult (..)
     -- * Build timeout
   , Timeout
@@ -19,7 +20,8 @@ module Tadka.GHCProtocol.Process
 
 import Data.ByteString (ByteString)
 import Data.Text (Text)
-import System.Exit (ExitCode)
+import qualified Data.Text as Text
+import System.Exit (ExitCode (..))
 
 data OutputStream = StdOut | StdErr
   deriving stock (Eq, Show)
@@ -46,6 +48,22 @@ newtype Signal = Signal Int
 -- directory missing, etc.).
 newtype ProcessError = ProcessError Text
   deriving stock (Eq, Show)
+
+-- | Why a build did not succeed, as one plain sentence; 'Nothing' for
+-- 'CompilerSucceeded'. This is what a user is told when the build
+-- produced no output of its own to show (a tool that could not be
+-- started, a timeout, a signal, or a silent non-zero exit).
+renderCompilerResult :: CompilerResult -> Maybe Text
+renderCompilerResult result = case result of
+  CompilerSucceeded                      -> Nothing
+  CompilerFailed ExitSuccess             -> Just "the build was reported as failed although its exit status was 0"
+  CompilerFailed (ExitFailure n)         -> Just ("the build failed with exit status " <> showInt n)
+  CompilerSignalled (Signal n)           -> Just ("the build was killed by signal " <> showInt n)
+  CompilerTimedOut                       -> Just "the build did not finish within the timeout and was stopped"
+  CompilerStartFailed (ProcessError msg) -> Just ("the build tool could not be started: " <> msg)
+  where
+    showInt :: Int -> Text
+    showInt = Text.pack . show
 
 data BuildResult = BuildResult
   { compilerResult :: CompilerResult
