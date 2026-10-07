@@ -14,6 +14,8 @@ import Hedgehog (assert, forAll, property, (===))
 import qualified Hedgehog.Gen as Gen
 import qualified Hedgehog.Range as Range
 import qualified Options.Applicative as Opt
+import qualified Prettyprinter as PP
+import qualified Prettyprinter.Render.Text as PPText
 import System.Exit (ExitCode (..))
 import qualified Tadka
 import Test.Tasty (TestTree)
@@ -22,11 +24,15 @@ import Test.Tasty.Hedgehog (testProperty)
 
 import Tadka.GHCProtocol
 import Tadka.GHCProtocol.Cli
-import Tadka.GHCProtocol.Opaque (opaqueMessage)
 
 --------------------------------------------------------------------------------
 -- mkTimeout
 --------------------------------------------------------------------------------
+
+-- | What a user is shown for an opaque record: the 'Tadka.message' it
+-- renders, not merely the field it is stored in.
+shown :: OpaqueGhcOutput -> Text.Text
+shown = PPText.renderStrict . PP.layoutPretty PP.defaultLayoutOptions . Tadka.message
 
 micros :: Double -> Either TimeoutError Int
 micros = fmap timeoutMicroseconds . mkTimeout
@@ -187,23 +193,30 @@ cliTests =
       assertBool "an ExitSuccess 'failure' is still explained"
         (isJust (renderCompilerResult (CompilerFailed ExitSuccess)))
 
-  , testCase "a failed build with no output shows its cause, never a blank error (blank 'error:' bug)" $ do
+  , testCase "a failed build with no output at all shows its cause in the one synthetic record" $ do
       let startFailed = CompilerStartFailed (ProcessError "cabal: createProcess: does not exist")
       case buildClassifications (classifyBuildOutput (BuildResult startFailed [])) of
-        [ClassifiedOpaque o] ->
-          opaqueMessage o @?= "the build tool could not be started: cabal: createProcess: does not exist"
+        [ClassifiedOpaque o] -> do
+          opaqueText o @?= "the build tool could not be started: cabal: createProcess: does not exist"
+          shown o @?= "the build tool could not be started: cabal: createProcess: does not exist"
+          opaqueRawBytes o @?= ""   -- nothing was captured: the text is not a rendering of bytes
         other -> assertFailure ("expected exactly one synthetic record, got " <> show other)
       case buildClassifications (classifyBuildOutput (BuildResult CompilerTimedOut [])) of
         [ClassifiedOpaque o] ->
-          opaqueMessage o @?= "the build did not finish within the timeout and was stopped"
+          shown o @?= "the build did not finish within the timeout and was stopped"
         other -> assertFailure ("expected exactly one synthetic record, got " <> show other)
 
-  , testCase "captured text is shown as is; the cause replaces only empty or blank text" $ do
-      let failed = Just (CompilerFailed (ExitFailure 1))
-      opaqueMessage (OpaqueGhcOutput StdErr "x" "real build output" failed) @?= "real build output"
-      opaqueMessage (OpaqueGhcOutput StdErr "  " "  " failed) @?= "the build failed with exit status 1"
-      opaqueMessage (OpaqueGhcOutput StdErr "" "" (Just CompilerSucceeded)) @?= ""
-      opaqueMessage (OpaqueGhcOutput StdErr "" "" Nothing) @?= ""
+  , testCase "blank lines the build printed stay blank; the cause is never added to them (regression)" $ do
+      -- shaped like real cabal output: blank lines between sections, then a failure
+      let captured = [ (StdErr, "Build profile: -O1"), (StdErr, ""), (StdErr, "Error: [Cabal-7125]")
+                     , (StdErr, ""), (StdErr, "Failed to build b-0.1."), (StdErr, "") ]
+          result   = BuildResult (CompilerFailed (ExitFailure 1)) captured
+          records  = [o | ClassifiedOpaque o <- buildClassifications (classifyBuildOutput result)]
+      -- what the user is SHOWN, not just what is stored
+      map shown records @?= ["Build profile: -O1", "", "Error: [Cabal-7125]", "", "Failed to build b-0.1.", ""]
+
+  , testCase "a successful build with no output manufactures nothing" $
+      buildClassifications (classifyBuildOutput (BuildResult CompilerSucceeded [])) @?= []
 
   , testCase "build-tool detection errors read as plain English (B14)" $ do
       let none      = renderBuildToolDetectionError NoRecognizedProjectFile

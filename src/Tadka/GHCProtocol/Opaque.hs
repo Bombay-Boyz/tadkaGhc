@@ -20,7 +20,6 @@ module Tadka.GHCProtocol.Opaque
     -- * Whole-build classification
   , BuildOutcome (..)
   , classifyBuildOutput
-  , opaqueMessage
   , attachCompilerResult
   ) where
 
@@ -201,10 +200,18 @@ classifyBuildOutput (BuildResult result ls) =
 -- record is introduced -- the only case a record is manufactured rather
 -- than derived from captured output -- so the failure is never silently
 -- lost purely at the LineClassification level.
+--
+-- That synthetic record has no captured bytes, so its text is the real
+-- cause ('renderCompilerResult': a tool that could not be started, a
+-- timeout, a signal, an exit status). It is set HERE, where the record is
+-- manufactured, and never by looking at a record's text later: a blank
+-- line the build itself printed is an ordinary record with blank text and
+-- must stay exactly as captured.
 attachCompilerResult :: CompilerResult -> [LineClassification] -> [LineClassification]
 attachCompilerResult CompilerSucceeded cs = cs
 attachCompilerResult result            [] =
-  [ClassifiedOpaque (OpaqueGhcOutput StdErr BS.empty Text.empty (Just result))]
+  [ClassifiedOpaque
+     (OpaqueGhcOutput StdErr BS.empty (fromMaybe Text.empty (renderCompilerResult result)) (Just result))]
 attachCompilerResult result            cs = map attach cs
   where
     attach (ClassifiedOpaque o)       = ClassifiedOpaque o { opaqueCompilerResult = Just result }
@@ -222,15 +229,4 @@ attachCompilerResult result            cs = map attach cs
 
 instance Tadka.Diagnostic OpaqueGhcOutput where
   severity _ = Tadka.SevError
-  message o  = pretty (opaqueMessage o)
-
--- | The text shown for a record: the captured text itself, except for the
--- synthetic record introduced when a build failed with no output at all.
--- That record has no text, and rendering it as-is would print a bare
--- "error:", losing the failure; so there the real cause (exit status,
--- signal, timeout, or why the build tool could not be started) is shown.
-opaqueMessage :: OpaqueGhcOutput -> Text
-opaqueMessage o
-  | Text.null (Text.strip (opaqueText o)) =
-      fromMaybe (opaqueText o) (opaqueCompilerResult o >>= renderCompilerResult)
-  | otherwise = opaqueText o
+  message o  = pretty (opaqueText o)
