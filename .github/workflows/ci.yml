@@ -84,7 +84,7 @@ jobs:
       - uses: haskell-actions/hlint-setup@v2
       - uses: haskell-actions/hlint-run@v2
         with:
-          path: '["src/", "process/", "cli/", "app/", "test/"]'
+          path: '["src/", "process/", "cli/", "app/", "test/", "examples/"]'
           # Non-blocking on style-only suggestions (severity "suggestion"),
           # blocking on warnings. The partiality ban (spec §0.1) lives in
           # .hlint.yaml as a restricted-functions rule.
@@ -114,7 +114,7 @@ jobs:
           cabal test all --test-option='--pattern=real-subprocess'
 
   consumer-smoke:
-    name: another package can depend on tadka-ghc:tadka-ghc-process (B12)
+    name: a separate package can use tadka-ghc as a library (B12, example)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: build-and-test
@@ -126,26 +126,58 @@ jobs:
           ghc-version: "9.14.1"
           cabal-version: "3.12"
 
-      - name: Build a package that depends on the public sublibrary
-        # A private internal library is invisible outside its package, so a
-        # regression of `visibility: public` on tadka-ghc-process only shows
-        # up when a DIFFERENT package tries to use it. This builds one.
+      - name: Build and run examples/library-consumer
+        # A different package that depends on tadka-ghc AND on its public
+        # sublibrary tadka-ghc:tadka-ghc-process. A private sublibrary is
+        # invisible to other packages, so a regression of
+        # `visibility: public` only shows up here, not in this package's own
+        # tests. The program also uses the documented public API end to end,
+        # so the README example cannot go stale.
+        working-directory: examples/library-consumer
         run: |
-          mkdir -p "$RUNNER_TEMP/consumer/app"
-          cd "$RUNNER_TEMP/consumer"
-          cat > consumer.cabal <<'EOF'
-          cabal-version: 3.0
-          name:          consumer
-          version:       0.1
-          executable consumer
-            main-is:          Main.hs
-            hs-source-dirs:   app
-            build-depends:    base, tadka-ghc:tadka-ghc-process
-            default-language: Haskell2010
-          EOF
-          printf 'module Main (main) where\nmain :: IO ()\nmain = pure ()\n' > app/Main.hs
-          printf 'packages: . %s\n' "$GITHUB_WORKSPACE" > cabal.project
           cabal build
+          cabal run -v0 library-consumer > "$RUNNER_TEMP/consumer-output.txt"
+          cat "$RUNNER_TEMP/consumer-output.txt"
+          grep -q "Couldn't match type" "$RUNNER_TEMP/consumer-output.txt"
+          grep -q "GHC code:    83865" "$RUNNER_TEMP/consumer-output.txt"
+
+  sdist-roundtrip:
+    name: the source distribution builds and passes its own tests (what Hackage users get)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: haskell-actions/setup@v2
+        with:
+          ghc-version: "9.14.1"
+          cabal-version: "3.12"
+
+      - name: Test the unpacked tarball, not the checkout
+        # Catches files missing from the sdist (fixtures, modules, docs)
+        # that the repository checkout would hide.
+        run: |
+          cabal sdist
+          mkdir "$RUNNER_TEMP/sdist"
+          tar -xzf dist-newstyle/sdist/tadka-ghc-*.tar.gz -C "$RUNNER_TEMP/sdist"
+          cd "$RUNNER_TEMP"/sdist/tadka-ghc-*/
+          cabal test --enable-tests
+
+  haddock:
+    name: Haddock builds (Hackage runs it on every upload)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: haskell-actions/setup@v2
+        with:
+          ghc-version: "9.14.1"
+          cabal-version: "3.12"
+
+      - name: Build the documentation
+        run: cabal haddock all
 
   package-bounds-refresh:
     name: package bounds refresh (scheduled)

@@ -1,3 +1,4 @@
+{-# OPTIONS_HADDOCK hide #-}
 -- | Schema-version and per-version wire types (vision §7, §8; spec Phase 1).
 --
 -- The only GADT family in this codebase (spec Phase 1, top note): a

@@ -1,3 +1,4 @@
+{-# OPTIONS_HADDOCK hide #-}
 -- | Process-outcome types (vision §3; spec Phase 6.1), kept pure and
 -- re-exported from the core library so 'Tadka.GHCProtocol.Opaque'
 -- (Phase 7) can refer to them without depending on the
@@ -23,6 +24,8 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import System.Exit (ExitCode (..))
 
+-- | Which of the build tool's two output streams a captured line arrived
+-- on.
 data OutputStream = StdOut | StdErr
   deriving stock (Eq, Show)
 
@@ -65,6 +68,8 @@ renderCompilerResult result = case result of
     showInt :: Int -> Text
     showInt = Text.pack . show
 
+-- | Everything observed about one finished build: how the process ended,
+-- and every output line it produced.
 data BuildResult = BuildResult
   { compilerResult :: CompilerResult
     -- ^ A process-level fact, never inferred from whether captured

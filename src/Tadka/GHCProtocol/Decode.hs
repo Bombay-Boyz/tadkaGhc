@@ -1,3 +1,4 @@
+{-# OPTIONS_HADDOCK hide #-}
 -- | Wire decoding and promotion into the stable semantic type (vision
 -- §22, §25; spec Phase 1.4, Phase 2.6-2.7, Phase 8).
 --

@@ -1,0 +1,26 @@
+cabal-version:      3.0
+name:               library-consumer
+version:            0.1.0.0
+synopsis:           Example: using tadka-ghc as a library from another package.
+description:
+  A complete, minimal program that depends on tadka-ghc the way any user
+  package would: it decodes one real GHC diagnostic, binds it to source
+  text, and renders it through Tadka. CI builds and runs it against the
+  repository on every change, so it cannot go stale.
+license:            MPL-2.0
+build-type:         Simple
+
+executable library-consumer
+  main-is:          Main.hs
+  hs-source-dirs:   app
+  build-depends:
+      base        >=4.20 && <4.23
+    , bytestring  >=0.10.12 && <0.14
+    , text        >=2.0.2 && <2.3
+    , tadka       >=2.0.0.0 && <2.1
+    , tadka-ghc
+      -- Not imported below. Listing the public sublibrary here makes the
+      -- solver prove that other packages can depend on it (audit B12).
+    , tadka-ghc:tadka-ghc-process
+  default-language: Haskell2010
+  ghc-options:      -Wall

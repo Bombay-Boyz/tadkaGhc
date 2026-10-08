@@ -1,3 +1,4 @@
+{-# OPTIONS_HADDOCK hide #-}
 -- | Unstructured / opaque build-output capture (vision §4; spec Phase 7).
 --
 -- OpaqueGhcOutput's Tadka.Diagnostic instance is defined HERE, not in
@@ -49,6 +50,10 @@ import Tadka.GHCProtocol.Types (GhcDiagnostic)
 -- into a payload/rendering split, spec Phase 7.1).
 --------------------------------------------------------------------------------
 
+-- | Build output that is not a decodable GHC diagnostic, captured
+-- faithfully instead of being discarded: a panic, a crash, the build tool's
+-- own progress text, or any other line. It is displayed with error
+-- severity, because understating a failure is worse than overstating one.
 data OpaqueGhcOutput = OpaqueGhcOutput
   { opaqueSource         :: OutputStream
   , opaqueRawBytes       :: ByteString
@@ -70,6 +75,8 @@ data OpaqueGhcOutput = OpaqueGhcOutput
 -- Classification result.
 --------------------------------------------------------------------------------
 
+-- | What a piece of captured build output turned out to be: a decoded GHC
+-- diagnostic, or an opaque record.
 data LineClassification
   = ClassifiedDiagnostic GhcDiagnostic
   | ClassifiedOpaque OpaqueGhcOutput
@@ -182,6 +189,8 @@ classifyInterleaved = go initialInterleavedState
 -- Phase 7.4).
 --------------------------------------------------------------------------------
 
+-- | The classified result of a whole build: how it ended, and what its
+-- output turned into.
 data BuildOutcome = BuildOutcome
   { buildCompilerResult  :: CompilerResult
     -- ^ Never inferred from whether any line happened to decode
@@ -190,6 +199,9 @@ data BuildOutcome = BuildOutcome
   , buildClassifications :: [LineClassification]
   } deriving stock (Show)
 
+-- | Classify everything a build printed. Total: every captured line ends up
+-- in exactly one record, so nothing is dropped, and a build that fails
+-- without printing anything gets one record saying why.
 classifyBuildOutput :: BuildResult -> BuildOutcome
 classifyBuildOutput (BuildResult result ls) =
   BuildOutcome result (attachCompilerResult result (classifyInterleaved ls))

@@ -1,3 +1,4 @@
+{-# OPTIONS_HADDOCK hide #-}
 -- | Coordinate conversion and source/span binding (vision §16-§20; spec
 -- Phase 3), written against tadka's real public API (tadka-2.0.0.0 from
 -- Hackage) rather than the vision/spec's assumed signatures. Two
@@ -66,6 +67,9 @@ import Tadka.GHCProtocol.Types
 -- Source text and lookup (§17: "must not silently read arbitrary files").
 --------------------------------------------------------------------------------
 
+-- | The full text of one source file, as read from disk (or supplied by
+-- the caller), used to turn GHC's line and column positions into an
+-- excerpt.
 newtype SourceText = SourceText Text
   deriving stock (Eq, Show)
 
@@ -264,6 +268,17 @@ data CoordinateError
 -- constructor here, per §18's own amendment).
 --------------------------------------------------------------------------------
 
+-- | What became of a diagnostic's source location when it was bound to
+-- source text. Every case other than 'SpanBound' means the diagnostic is
+-- still shown, just without a source excerpt, and each says why:
+--
+-- * 'NoSpan': GHC gave no location.
+-- * 'SpanNoSource': the file was not found.
+-- * 'SpanSourceUnavailable': the file could not be used (an I/O failure, a
+--   decoding failure, or a path that matches files in several packages).
+-- * 'SpanInvalidCoordinates': the position does not exist in the file,
+--   which usually means the file differs from what GHC compiled.
+-- * 'SpanBound': a source excerpt is available.
 data SpanState
   = NoSpan
   | SpanNoSource GhcSpan

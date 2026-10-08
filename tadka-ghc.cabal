@@ -3,16 +3,38 @@ name:                tadka-ghc
 version:             0.1.0.0
 synopsis:            Adapter for GHC's external JSON diagnostics protocol, projecting into Tadka.
 description:
-  tadka-ghc decodes GHC's -fdiagnostics-as-json protocol faithfully,
+  tadka-ghc decodes GHC's @-fdiagnostics-as-json@ protocol faithfully,
   captures any unstructured build output (panics, crashes, non-GHC
   failures) as honestly-labeled data rather than discarding it, and
-  optionally projects both into Tadka's diagnostic model so Tadka's
-  existing renderers can handle graphical, prose, and JSON output.
+  projects both into the diagnostic model of
+  <https://hackage.haskell.org/package/tadka tadka>, so its graphical,
+  narratable and JSON renderers can display GHC's diagnostics with real
+  source excerpts.
+  .
+  The package provides:
+  .
+  * a library whose single supported import is "Tadka.GHCProtocol";
+  .
+  * the @tadka-ghc@ executable, which runs @cabal build@ or
+    @stack build@ with the protocol enabled and renders the result;
+  .
+  * the public sublibrary @tadka-ghc:tadka-ghc-process@, which holds the
+    one function that spawns a process, so depending on the core library
+    alone never grants that capability.
+  .
+  Projects being built need GHC 9.10 or newer, the first release with
+  @-fdiagnostics-as-json@.
 category:            Development, Compilers/Interpreters
 license:             MPL-2.0
 license-file:        LICENSE
 maintainer:          TODO-REPLACE-ME <maintainer@example.com>
+homepage:            https://github.com/Bombay-Boyz/tadka-ghc
+bug-reports:         https://github.com/Bombay-Boyz/tadka-ghc/issues
+tested-with:         GHC == 9.10.3, GHC == 9.12.4, GHC == 9.14.1
 build-type:          Simple
+extra-doc-files:
+  README.md
+  CHANGELOG.md
 -- The test-suite reads these by relative path, so they must ship in the
 -- sdist. Cabal only allows a wildcard together with a file extension, so
 -- there is one glob per extension used under test/fixtures; a fixture with

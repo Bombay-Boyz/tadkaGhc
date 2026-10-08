@@ -1,3 +1,4 @@
+{-# OPTIONS_HADDOCK hide #-}
 -- | Stable GHC-domain semantic representation (vision §9-§15; spec Phase 2).
 --
 -- Deliberately depends only on 'Tadka.GHCProtocol.Schema' (the raw wire
@@ -64,6 +65,10 @@ import Tadka.GHCProtocol.Schema
 -- edit this declaration in place then, don't introduce a second type).
 --------------------------------------------------------------------------------
 
+-- | Why decoding a GHC diagnostic, or one part of it, failed. Decoding is
+-- total: every malformed, unsupported or out-of-range input becomes one of
+-- these values and never an exception. To show one to a person, use
+-- @renderDecodeError@; do not use 'show', which is for debugging only.
 data DecodeError
   = DecodeMalformedJson Text
   | DecodeNotAnObject
@@ -85,6 +90,10 @@ data DecodeError
 -- identifies the compiler, not the JSON protocol revision).
 --------------------------------------------------------------------------------
 
+-- | The version of GHC that produced a diagnostic, exactly as GHC reported
+-- it (for example @ghc-9.10.3@). The format is GHC's own and is not
+-- normalised. Not to be confused with the JSON /schema/ version. Build one
+-- with 'mkGhcVersion' and read it with 'unGhcVersion'.
 newtype GhcVersion = GhcVersion Text
   deriving stock (Eq, Ord, Show)
 
@@ -107,6 +116,9 @@ unGhcVersion (GhcVersion t) = t
 -- fabricated into a Tadka DiagnosticCode).
 --------------------------------------------------------------------------------
 
+-- | GHC's own numeric diagnostic code (for example @83865@), preserved
+-- exactly and never converted into a Tadka diagnostic code. Build one with
+-- 'mkGhcDiagnosticCode' and read it with 'unGhcDiagnosticCode'.
 newtype GhcDiagnosticCode = GhcDiagnosticCode Int
   deriving stock (Eq, Ord, Show)
 
@@ -131,6 +143,9 @@ unGhcDiagnosticCode (GhcDiagnosticCode n) = n
 -- defaulting).
 --------------------------------------------------------------------------------
 
+-- | How serious GHC considered a diagnostic: exactly the two values GHC's
+-- schema defines. Any other severity string fails to decode with
+-- 'UnrecognizedSeverity' instead of being guessed at.
 data GhcSeverity = SevWarning | SevError
   deriving stock (Eq, Show)
 
@@ -148,6 +163,9 @@ mkGhcSeverity other     = Left (UnrecognizedSeverity other)
 -- is itself a closed two-constructor type, so this mapping cannot fail.
 --------------------------------------------------------------------------------
 
+-- | Why GHC raised a diagnostic: either the warning flags that enabled it
+-- or a named category. This mirrors the two shapes GHC's schema allows and
+-- is never simplified into one.
 data DiagnosticReason
   = ReasonFlags (NonEmpty Text)
   | ReasonCategory Text
@@ -162,6 +180,8 @@ promoteReason (RawReasonCategory c)  = ReasonCategory c
 -- reparsed as structured diagnostics.
 --------------------------------------------------------------------------------
 
+-- | GHC's own pre-rendered text for a diagnostic (carried by schema 1.2),
+-- kept exactly as supplied and never re-parsed.
 newtype RenderedDiagnostic = RenderedDiagnostic Text
   deriving stock (Eq, Show)
 
@@ -170,9 +190,14 @@ newtype RenderedDiagnostic = RenderedDiagnostic Text
 -- only -- binding a span against real source text is Phase 3's job).
 --------------------------------------------------------------------------------
 
+-- | A one-based line number, as GHC reports it. Build one with 'mkLine' and
+-- read it with 'unLine'.
 newtype Line = Line Int
   deriving stock (Eq, Ord, Show)
 
+-- | A one-based column number, as GHC reports it. GHC counts characters
+-- (not bytes), and a tab advances the column to the next multiple of 8
+-- plus 1. Build one with 'mkColumn' and read it with 'unColumn'.
 newtype Column = Column Int
   deriving stock (Eq, Ord, Show)
 
@@ -199,6 +224,11 @@ mkColumn n
   | n > toInteger (maxBound :: Int)  = Left (InvalidCoordinate "column exceeds Int range; got " n)
   | otherwise                        = Right (Column (fromInteger n))
 
+-- | The source region GHC attached to a diagnostic: a file and a start and
+-- end position, all exactly as GHC reported them. Positions are one-based
+-- and the end is exclusive. The file is verbatim, which for a cabal project
+-- means relative to the package being built, so the same path can name a
+-- different file in each package of a multi-package project.
 data GhcSpan = GhcSpan
   { spanFile      :: FilePath  -- ^ preserved verbatim, §20
   , spanStartLine :: Line
@@ -247,6 +277,9 @@ promoteSpan rs = do
 -- GhcDiagnostic (§9's stable semantic representation).
 --------------------------------------------------------------------------------
 
+-- | One GHC diagnostic, decoded from the JSON protocol into a form that does
+-- not depend on the schema version: every supported schema decodes to this
+-- type, and a field that a given version does not carry is 'Nothing'.
 data GhcDiagnostic = GhcDiagnostic
   { ghcVersion   :: GhcVersion
   , ghcSpan      :: Maybe GhcSpan

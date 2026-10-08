@@ -1,3 +1,4 @@
+{-# OPTIONS_HADDOCK hide #-}
 -- | Build-tool detection, diagnostics-flag injection, and chunk-to-line
 -- framing (vision §3; spec Phase 6.2, 6.3, 6.5). All pure except
 -- 'detectBuildTool', which only inspects a directory listing -- it does
@@ -35,9 +36,11 @@ import System.FilePath (takeExtension)
 -- Build tool identity and detection (§3, spec Phase 6.2).
 --------------------------------------------------------------------------------
 
+-- | The build tool that runs a project's build.
 data BuildTool = Cabal | Stack
   deriving stock (Eq, Show)
 
+-- | Why no build tool could be chosen for a project directory.
 data BuildToolDetectionError
   = NoRecognizedProjectFile
   | AmbiguousProjectFiles (NonEmpty FilePath)

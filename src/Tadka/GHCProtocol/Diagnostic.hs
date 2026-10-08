@@ -1,3 +1,4 @@
+{-# OPTIONS_HADDOCK hide #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
 -- | Tadka projection (vision §6, §27; spec Phase 4-5), written against
@@ -114,6 +115,10 @@ instance Tadka.Diagnostic GhcDiagnostic where
 -- it against source material (§5.1, Phase 3's SpanState).
 --------------------------------------------------------------------------------
 
+-- | A GHC diagnostic together with the outcome of binding its span to
+-- source text. This is the value to hand to Tadka: it is an instance of
+-- Tadka's diagnostic class, so Tadka's graphical, narratable and JSON
+-- renderers can display it, with a source excerpt when 'SpanBound'.
 data BoundGhcDiagnostic = BoundGhcDiagnostic
   { boundDiagnostic :: GhcDiagnostic
   , boundSpanState  :: SpanState
@@ -145,6 +150,9 @@ instance Tadka.Diagnostic BoundGhcDiagnostic where
 -- fail" than an Either whose Left is never constructed.
 --------------------------------------------------------------------------------
 
+-- | Reserved for a conversion into Tadka that could fail. It has no values
+-- because projecting into Tadka is currently total; it exists so a fallible
+-- conversion can be added later without an incompatible change.
 data TadkaConversionError
 
 --------------------------------------------------------------------------------
@@ -153,6 +161,8 @@ data TadkaConversionError
 -- diagnostic).
 --------------------------------------------------------------------------------
 
+-- | A plain-English description of a decode failure, for showing to a
+-- person. Total, and never built from 'show'.
 renderDecodeError :: DecodeError -> Text
 renderDecodeError e = case e of
   DecodeMalformedJson msg ->
@@ -180,6 +190,9 @@ renderDecodeError e = case e of
     "span ends at " <> renderPosition el ec
       <> " before it starts at " <> renderPosition sl sc
 
+-- | A plain-English description of why a span could not be bound to source
+-- text, naming the span and the real reason. Total, and never built from
+-- 'show'.
 renderSourceBindingError :: SourceBindingError -> Text
 renderSourceBindingError e = case e of
   InvalidCoordinates sp reason ->
@@ -269,6 +282,8 @@ renderTimeoutError e = case e of
     "must be at most " <> Text.pack (show (truncate maxTimeoutSeconds :: Integer))
       <> " seconds (one year)"
 
+-- | A plain-English description of why no build tool could be chosen for a
+-- project directory. Total, and never built from 'show'.
 renderBuildToolDetectionError :: BuildToolDetectionError -> Text
 renderBuildToolDetectionError e = case e of
   NoRecognizedProjectFile ->
