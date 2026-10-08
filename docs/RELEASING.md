@@ -10,7 +10,7 @@ releases.
 |---|---|---|
 | 1 | Runner rewrite: audit B1, B2, B3 | A very large build output can stall a non-threaded build; on `--timeout` the compilers started by the build tool can outlive it; a read error silently drops buffered output. |
 | 2 | Panic grouping: audit B4 | A panic routed through GHC's diagnostic pipeline is split into separate records. |
-| 3 | `maintainer` (and, if wanted, `author` / `copyright`) in `tadka-ghc.cabal` | Still the placeholder `TODO-REPLACE-ME <maintainer@example.com>`. Hackage shows it publicly. |
+| 3 | ~~maintainer, author, copyright~~ | Done: set in `tadka-ghc.cabal`. |
 | 4 | User testing signed off (see "User testing" below) | The package has been exercised by its own tests only, not yet by a real project. |
 | 5 | CI green on `main` for **all** jobs, on the commit being released | `tested-with` in the cabal file claims GHC 9.10.3, 9.12.4 and 9.14.1. |
 | 6 | README "Known limitations" and the CHANGELOG match reality | Remove the limitations fixed above; add any new ones found while testing. |
