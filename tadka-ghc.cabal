@@ -27,7 +27,9 @@ description:
 category:            Development, Compilers/Interpreters
 license:             MPL-2.0
 license-file:        LICENSE
-maintainer:          TODO-REPLACE-ME <maintainer@example.com>
+author:             Sabrinathan Nair
+maintainer:         259497327+Bombay-Boyz@users.noreply.github.com
+copyright:          (c) 2026 Bombay-Boyz
 homepage:            https://github.com/Bombay-Boyz/tadka-ghc
 bug-reports:         https://github.com/Bombay-Boyz/tadka-ghc/issues
 tested-with:         GHC == 9.10.3, GHC == 9.12.4, GHC == 9.14.1
