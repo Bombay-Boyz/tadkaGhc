@@ -199,7 +199,7 @@ data BuildOutcome = BuildOutcome
     -- output was all valid diagnostics still reports the failure here.
   , buildClassifications :: [LineClassification]
   , buildCaptureStatus   :: CaptureStatus
-    -- ^ Passed through from the 'BuildResult': when it is not
+    -- ^ Passed through from the @BuildResult@: when it is not
     -- 'CaptureComplete', the classifications are of a bounded part of the
     -- output, and a front end should say so.
   } deriving stock (Show)

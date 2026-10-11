@@ -49,8 +49,7 @@ newtype SchemaVersion = SchemaVersion Text
 
 -- | Total and unconditional: any 'Text' is a syntactically valid schema
 -- version label, even one we don't support. Support is judged later, by
--- 'classifySchemaVersion', not here.
--- | Total: any text is a schema version label.
+-- @classifySchemaVersion@, not here.
 mkSchemaVersion :: Text -> SchemaVersion
 mkSchemaVersion = SchemaVersion
 
