@@ -10,7 +10,7 @@
 -- made): this module's own smart constructors (mkGhcVersion,
 -- mkGhcSeverity, mkGhcDiagnosticCode, mkLine, mkColumn, mkGhcSpan) all
 -- need to *produce* DecodeError values, and Decode.hs needs GhcDiagnostic
--- from this module for 'promote' -- defining DecodeError in Decode.hs
+-- from this module for @promote@ -- defining DecodeError in Decode.hs
 -- would make the two modules mutually dependent. Decode.hs re-exports
 -- DecodeError, so its public location for callers is unaffected.
 module Tadka.GHCProtocol.Types
@@ -263,8 +263,8 @@ renderGhcSpan sp =
     <> "-" <> renderPosition (spanEndLine sp) (spanEndCol sp)
 
 -- | Structural promotion of the wire's nested span shape into a
--- validated 'GhcSpan'. Does not touch source text -- that is Phase 3's
--- 'convertSpan'/'bindSpan', a genuinely separate operation (§17).
+-- validated @GhcSpan@. Does not touch source text -- that is Phase 3's
+-- @convertSpan@/@bindSpan@, a genuinely separate operation (§17).
 promoteSpan :: RawSpan -> Either DecodeError GhcSpan
 promoteSpan rs = do
   sl <- mkLine   (rpLine   (rsStart rs))

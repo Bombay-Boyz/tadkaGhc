@@ -38,15 +38,23 @@ import Data.Text (Text)
 -- supported versions are the permanent universe of possible versions").
 --------------------------------------------------------------------------------
 
+-- | The version label of GHC's JSON diagnostic schema, exactly as GHC
+-- printed it (for example @1.0@, or one this package does not support:
+-- the type is open on purpose, so an unknown future version is data and
+-- not a failure to construct). Not to be confused with the compiler
+-- version, which is a 'Tadka.GHCProtocol.GhcVersion'. Build one with
+-- 'mkSchemaVersion' and read it with 'unSchemaVersion'.
 newtype SchemaVersion = SchemaVersion Text
   deriving stock (Eq, Ord, Show)
 
 -- | Total and unconditional: any 'Text' is a syntactically valid schema
 -- version label, even one we don't support. Support is judged later, by
 -- 'classifySchemaVersion', not here.
+-- | Total: any text is a schema version label.
 mkSchemaVersion :: Text -> SchemaVersion
 mkSchemaVersion = SchemaVersion
 
+-- | The label exactly as it was given.
 unSchemaVersion :: SchemaVersion -> Text
 unSchemaVersion (SchemaVersion t) = t
 
@@ -77,12 +85,12 @@ data SomeSKnownSchemaVersion where
 newtype UnsupportedSchemaVersion = UnsupportedSchemaVersion SchemaVersion
   deriving stock (Eq, Show)
 
--- | Total: every 'SchemaVersion' is either one of the three known labels
+-- | Total: every @SchemaVersion@ is either one of the three known labels
 -- or falls through to the single, deliberate catch-all — the only
--- allowed catch-all in this codebase, justified because 'SchemaVersion'
+-- allowed catch-all in this codebase, justified because @SchemaVersion@
 -- is an intentionally open type (§7). This is the mechanism behind §7's
 -- dispatch diagram ("1.0 / 1.1 / 1.2 / future version"): the wildcard
--- branch produces data ('UnsupportedSchemaVersion'), never a decode-time
+-- branch produces data (@UnsupportedSchemaVersion@), never a decode-time
 -- crash (invariant #2, §32).
 classifySchemaVersion
   :: SchemaVersion -> Either UnsupportedSchemaVersion SomeSKnownSchemaVersion

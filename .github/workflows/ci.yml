@@ -113,6 +113,12 @@ jobs:
         run: |
           cabal test all --test-option='--pattern=real-subprocess'
 
+      - name: Terminating tadka-ghc also stops the build it started
+        # The build runs in its own process group (so a timeout can stop
+        # the compilers it starts), which means a signal aimed at tadka-ghc
+        # does not reach it by itself. The executable must stop the group.
+        run: scripts/check-signal-cleanup.sh "$(cabal list-bin tadka-ghc)"
+
   consumer-smoke:
     name: a separate package can use tadka-ghc as a library (B12, example)
     runs-on: ubuntu-24.04

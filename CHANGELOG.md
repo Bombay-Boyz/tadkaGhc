@@ -31,6 +31,14 @@ First release.
 - **`tadka-ghc-process`**, a public sublibrary containing the one
   function that spawns a process, so depending on the core library alone
   never grants that capability.
+- **A runner that enforces its timeout.** On POSIX systems the build runs
+  in its own process group; on `--timeout`, interrupt, SIGTERM or SIGHUP
+  the whole group is stopped (SIGTERM, a short grace period, then
+  SIGKILL), so compilers started by the build do not outlive it.
+  Reading the build's output is bounded: if a process the build started
+  holds the pipes open, reading stops after a grace period and the result
+  says so (`CaptureStatus`), keeping everything received, including a
+  final line with no newline.
 - **Typed timeouts** (`Timeout`, `mkTimeout`): zero, negative, NaN and
   infinite values are unrepresentable.
 - **Plain-English renderers** for every error that can reach a terminal;

@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 -- | The tadka-ghc executable (vision §3; spec Phase 6's CLI entry
 -- point). Wires together: build-tool detection, flag injection,
 -- subprocess execution, classification of the captured output, and
@@ -33,12 +34,16 @@
 --     literal behaviour exactly.
 module Main (main) where
 
+import Control.Concurrent (myThreadId, throwTo)
 import Control.Monad (forM_, unless)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import qualified Data.Text as Text
 import System.Directory (doesDirectoryExist)
 import System.Exit (ExitCode (..), exitWith)
 import System.IO (hPutStrLn, stderr)
+#if !defined(mingw32_HOST_OS)
+import System.Posix.Signals (Handler (Catch), installHandler, sigHUP, sigTERM)
+#endif
 import qualified Tadka
 
 import Tadka.GHCProtocol
@@ -124,7 +129,32 @@ runTadkaGhc opts = do
       provider  <- projectSourceProvider (cliDir opts)
       notesSeen <- newIORef []
       mapM_ (reportClassification cfg provider notesSeen) toShow
+      -- Never silent about incomplete output: if reading stopped early or
+      -- failed, say so (on stderr, so machine-readable stdout stays clean).
+      forM_ (renderCaptureStatus (buildCaptureStatus outcome)) $ \note ->
+        hPutStrLn stderr ("tadka-ghc: note: " <> Text.unpack note)
       exitWith (exitCodeFor (buildCompilerResult outcome))
 
 main :: IO ()
-main = getCliOptions >>= runTadkaGhc
+main = do
+  stopBuildWhenTerminated
+  getCliOptions >>= runTadkaGhc
+
+-- | The build runs in its own process group, so a signal aimed at this
+-- program no longer reaches it automatically. Ctrl-C already becomes an
+-- exception in GHC's runtime; SIGTERM (what @kill@, @timeout@ and CI
+-- runners send) and SIGHUP would end this process at once and leave the
+-- build running. They are turned into an ordinary exit, with the
+-- conventional status 128 + signal number, so the runner's cleanup stops
+-- the build's whole process group first. Windows has no such signals.
+stopBuildWhenTerminated :: IO ()
+#if defined(mingw32_HOST_OS)
+stopBuildWhenTerminated = pure ()
+#else
+stopBuildWhenTerminated = do
+  mainThread <- myThreadId
+  let exitOn sig status = installHandler sig (Catch (throwTo mainThread (ExitFailure status))) Nothing
+  _ <- exitOn sigTERM 143
+  _ <- exitOn sigHUP 129
+  pure ()
+#endif

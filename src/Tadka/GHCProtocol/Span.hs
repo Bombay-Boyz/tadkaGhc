@@ -7,7 +7,7 @@
 --   * 'Tadka.mkNamedSource' and 'Tadka.mkContext' both return 'Either'
 --     (the spec assumed bare values for both).
 --   * 'Tadka.mkContext' bounds-checks the span against the real source
---     length internally (via its own 'resolveSpan') -- so tadka-ghc does
+--     length internally (via its own @resolveSpan@) -- so tadka-ghc does
 --     NOT need to duplicate an end-of-source bounds check itself; a span
 --     whose coordinates lie outside the source surfaces as a
 --     'TadkaContextRejected', not as a separate check in this module.
@@ -96,7 +96,7 @@ newtype SourceProvider m = SourceProvider
   { lookupSource :: FilePath -> m (Either SourceLookupError (Maybe SourceText)) }
 
 -- | Opt-in convenience: never invoked implicitly by any decode/promotion
--- function, only by a caller who explicitly passes it to 'bindSpan'.
+-- function, only by a caller who explicitly passes it to @bindSpan@.
 -- Catches only the specific IO exceptions that correspond to a missing
 -- file; any other exception propagates rather than being silently
 -- absorbed.
@@ -233,14 +233,14 @@ projectSourceProvider dir = do
 -- Source-binding errors, reflecting tadka's real (Either-returning) API.
 --------------------------------------------------------------------------------
 
--- | Every way binding a 'GhcSpan' against real source text can fail.
+-- | Every way binding a @GhcSpan@ against real source text can fail.
 -- The first constructor is tadka-ghc's own coordinate-conversion
 -- failure (line/column doesn't fit the source found); the other three
 -- wrap tadka's own three validation points in the pipeline
 -- (mkSpan/mkNamedSource/mkContext) -- each genuinely reachable, not
 -- merely present for totality's sake: 'TadkaContextRejected' in
 -- particular is how an out-of-source-bounds span is actually reported,
--- since tadka's own 'mkContext' does that bounds check, not this module.
+-- since tadka's own @mkContext@ does that bounds check, not this module.
 data SourceBindingError
   = InvalidCoordinates GhcSpan CoordinateError
   | TadkaSpanRejected GhcSpan Tadka.SpanBuildError
@@ -386,7 +386,7 @@ columnToIndex content target = go 0 1 (Text.unpack content)
 --
 -- Note what this function does NOT do: it does not itself check that
 -- the end offset lies within the source. That check is tadka's own
--- 'Tadka.mkContext' (via its internal 'resolveSpan') -- surfaced here as
+-- 'Tadka.mkContext' (via its internal @resolveSpan@) -- surfaced here as
 -- 'TadkaContextRejected'. Duplicating it here would be exactly the kind
 -- of "duplicate Tadka's own abstraction" §19 warns against.
 convertSpan :: SourceText -> GhcSpan -> Either SourceBindingError Tadka.Context
@@ -401,7 +401,7 @@ convertSpan (SourceText src) sp = do
     lineMeta = computeLineMetadata src
 
 -- | Total for every combination of 'Maybe GhcSpan' and every possible
--- 'SourceProvider' result, including a genuine lookup failure.
+-- @SourceProvider@ result, including a genuine lookup failure.
 bindSpan :: Monad m => SourceProvider m -> Maybe GhcSpan -> m SpanState
 bindSpan _        Nothing    = pure NoSpan
 bindSpan provider (Just spn) = do

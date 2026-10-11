@@ -33,6 +33,7 @@ import Test.Tasty.Hedgehog (testProperty)
 
 import CliTests (cliTests, timeoutTests)
 import CoordinateTests (tabTests)
+import RunnerTests (runnerTests)
 import SourceResolutionTests (sourceResolutionTests)
 import Tadka.GHCProtocol.BuildTool
 import Tadka.GHCProtocol.Decode
@@ -63,6 +64,7 @@ tests = testGroup "tadka-ghc"
   , testGroup "Command line" cliTests
   , testGroup "Tab columns and GHC coordinate conventions" tabTests
   , testGroup "Source path resolution across packages" sourceResolutionTests
+  , testGroup "Runner against real processes" runnerTests
   , testGroup "Phase 6: build tool wrapper" phase6Tests
   , testGroup "Phase 7: opaque output capture" phase7Tests
   , testGroup "Phase 8: pure stream semantics" phase8Tests
@@ -769,7 +771,7 @@ phase7Tests =
         other -> assertFailure ("expected one synthetic ClassifiedOpaque, got " <> show other)
 
   , testCase "classifyBuildOutput: buildCompilerResult reflects failure even when every line decoded fine" $ do
-      let br = BuildResult (CompilerFailed (ExitFailure 1)) [(StdOut, validDiagLine)]
+      let br = BuildResult (CompilerFailed (ExitFailure 1)) [(StdOut, validDiagLine)] CaptureComplete
           outcome = classifyBuildOutput br
       assertEqual "buildCompilerResult" (CompilerFailed (ExitFailure 1)) (buildCompilerResult outcome)
 
@@ -971,7 +973,7 @@ phase9Tests =
       prop_classifyStream_reconstructs_input
 
   , testCase "BuildRunner: a fake runner enables deterministic testing without a real toolchain" $ do
-      let fakeResult = BuildResult CompilerSucceeded [(StdOut, validDiagLine)]
+      let fakeResult = BuildResult CompilerSucceeded [(StdOut, validDiagLine)] CaptureComplete
           fakeRunner = BuildRunner (\_ _ _ _ -> pure fakeResult)
       result <- execute fakeRunner Nothing Cabal "." []
       assertEqual "fake result returned unchanged" fakeResult result

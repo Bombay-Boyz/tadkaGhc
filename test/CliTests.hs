@@ -195,13 +195,13 @@ cliTests =
 
   , testCase "a failed build with no output at all shows its cause in the one synthetic record" $ do
       let startFailed = CompilerStartFailed (ProcessError "cabal: createProcess: does not exist")
-      case buildClassifications (classifyBuildOutput (BuildResult startFailed [])) of
+      case buildClassifications (classifyBuildOutput (BuildResult startFailed [] CaptureComplete)) of
         [ClassifiedOpaque o] -> do
           opaqueText o @?= "the build tool could not be started: cabal: createProcess: does not exist"
           shown o @?= "the build tool could not be started: cabal: createProcess: does not exist"
           opaqueRawBytes o @?= ""   -- nothing was captured: the text is not a rendering of bytes
         other -> assertFailure ("expected exactly one synthetic record, got " <> show other)
-      case buildClassifications (classifyBuildOutput (BuildResult CompilerTimedOut [])) of
+      case buildClassifications (classifyBuildOutput (BuildResult CompilerTimedOut [] CaptureComplete)) of
         [ClassifiedOpaque o] ->
           shown o @?= "the build did not finish within the timeout and was stopped"
         other -> assertFailure ("expected exactly one synthetic record, got " <> show other)
@@ -210,13 +210,13 @@ cliTests =
       -- shaped like real cabal output: blank lines between sections, then a failure
       let captured = [ (StdErr, "Build profile: -O1"), (StdErr, ""), (StdErr, "Error: [Cabal-7125]")
                      , (StdErr, ""), (StdErr, "Failed to build b-0.1."), (StdErr, "") ]
-          result   = BuildResult (CompilerFailed (ExitFailure 1)) captured
+          result   = BuildResult (CompilerFailed (ExitFailure 1)) captured CaptureComplete
           records  = [o | ClassifiedOpaque o <- buildClassifications (classifyBuildOutput result)]
       -- what the user is SHOWN, not just what is stored
       map shown records @?= ["Build profile: -O1", "", "Error: [Cabal-7125]", "", "Failed to build b-0.1.", ""]
 
   , testCase "a successful build with no output manufactures nothing" $
-      buildClassifications (classifyBuildOutput (BuildResult CompilerSucceeded [])) @?= []
+      buildClassifications (classifyBuildOutput (BuildResult CompilerSucceeded [] CaptureComplete)) @?= []
 
   , testCase "build-tool detection errors read as plain English (B14)" $ do
       let none      = renderBuildToolDetectionError NoRecognizedProjectFile

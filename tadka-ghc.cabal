@@ -138,10 +138,15 @@ library tadka-ghc-process
   build-depends:
       base            >=4.20      && <4.23
     , tadka-ghc
+    , async           >=2.2       && <2.3
     , typed-process   >=0.2       && <0.3
+    , process         >=1.6       && <1.7
     , stm             >=2.5       && <2.7
     , bytestring      >=0.10.12   && <0.14
     , text            >=2.0.2     && <2.3
+  if !os(windows)
+    build-depends:
+      unix            >=2.7       && <2.9
   default-language: Haskell2010
 
 -- Command-line parsing, split out so it can be tested without spawning
@@ -176,6 +181,9 @@ executable tadka-ghc
     , tadka           >=2.0.0.0   && <2.1
     , text            >=2.0.2     && <2.3
     , directory       >=1.3       && <1.5
+  if !os(windows)
+    build-depends:
+      unix            >=2.7       && <2.9
   default-language: Haskell2010
 
 test-suite tadka-ghc-test
@@ -186,6 +194,7 @@ test-suite tadka-ghc-test
   other-modules:
     CliTests
     CoordinateTests
+    RunnerTests
     SourceResolutionTests
   build-depends:
       base            >=4.20      && <4.23

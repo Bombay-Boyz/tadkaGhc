@@ -39,6 +39,9 @@ module Tadka.GHCProtocol
 
     -- * Decoding
   , DecodeError (..)
+  , SchemaVersion
+  , mkSchemaVersion
+  , unSchemaVersion
   , DecodingMode (..)
   , DecodeWarning (..)
   , decodeDiagnosticLine
@@ -83,6 +86,8 @@ module Tadka.GHCProtocol
   , Signal (..)
   , ProcessError (..)
   , renderCompilerResult
+  , CaptureStatus (..)
+  , renderCaptureStatus
   , BuildResult (..)
   , Timeout
   , TimeoutError (..)
@@ -101,5 +106,6 @@ import Tadka.GHCProtocol.Decode
 import Tadka.GHCProtocol.Diagnostic
 import Tadka.GHCProtocol.Opaque
 import Tadka.GHCProtocol.Process
+import Tadka.GHCProtocol.Schema (SchemaVersion, mkSchemaVersion, unSchemaVersion)
 import Tadka.GHCProtocol.Span
 import Tadka.GHCProtocol.Types

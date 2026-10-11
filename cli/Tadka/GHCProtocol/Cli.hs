@@ -32,6 +32,7 @@ import Tadka.GHCProtocol
   , renderTimeoutError
   )
 
+-- | The parsed command line of @tadka-ghc@.
 data CliOptions = CliOptions
   { cliDir       :: FilePath
   , cliTool      :: Maybe BuildTool
@@ -74,7 +75,9 @@ cliParserInfo extra =
          "Everything after -- is passed straight to the build tool. \
          \Exit status: the build's own exit code; 124 if the timeout was \
          \reached; 127 if the build tool could not be started; 130 if it \
-         \was killed by a signal; 2 for a usage error."
+         \was killed by a signal; 143 or 129 if tadka-ghc itself was \
+         \terminated (SIGTERM, SIGHUP), in which case the build is stopped \
+         \too; 2 for a usage error."
     <> Opt.failureCode 2
 
 versionOption :: Opt.Parser (a -> a)

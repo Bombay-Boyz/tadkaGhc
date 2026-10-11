@@ -39,6 +39,7 @@ import qualified Tadka
 import Tadka.GHCProtocol.Decode (decodeDiagnosticLine)
 import Tadka.GHCProtocol.Process
   ( BuildResult (..)
+  , CaptureStatus (..)
   , CompilerResult (..)
   , OutputStream (..)
   , renderCompilerResult
@@ -68,7 +69,7 @@ data OpaqueGhcOutput = OpaqueGhcOutput
   , opaqueCompilerResult :: Maybe CompilerResult
     -- ^ An explicit projection of the whole build's outcome (Phase 6),
     -- attached as a separate post-processing pass (§7.4) -- never the
-    -- primary representation of success/failure. See 'BuildOutcome'.
+    -- primary representation of success/failure. See @BuildOutcome@.
   } deriving stock (Eq, Show)
 
 --------------------------------------------------------------------------------
@@ -197,14 +198,18 @@ data BuildOutcome = BuildOutcome
     -- successfully -- a build that failed with exit code 1 but whose
     -- output was all valid diagnostics still reports the failure here.
   , buildClassifications :: [LineClassification]
+  , buildCaptureStatus   :: CaptureStatus
+    -- ^ Passed through from the 'BuildResult': when it is not
+    -- 'CaptureComplete', the classifications are of a bounded part of the
+    -- output, and a front end should say so.
   } deriving stock (Show)
 
 -- | Classify everything a build printed. Total: every captured line ends up
 -- in exactly one record, so nothing is dropped, and a build that fails
 -- without printing anything gets one record saying why.
 classifyBuildOutput :: BuildResult -> BuildOutcome
-classifyBuildOutput (BuildResult result ls) =
-  BuildOutcome result (attachCompilerResult result (classifyInterleaved ls))
+classifyBuildOutput (BuildResult result ls status) =
+  BuildOutcome result (attachCompilerResult result (classifyInterleaved ls)) status
 
 -- | Total: attaches the build's final CompilerResult to every
 -- OpaqueGhcOutput already produced. If classification produced no
@@ -232,8 +237,8 @@ attachCompilerResult result            cs = map attach cs
 --------------------------------------------------------------------------------
 -- OpaqueGhcOutput's Tadka.Diagnostic instance (§5.3, §27): thin by
 -- design -- no span, code, hints, or reason to project, because none of
--- that genuinely existed in the captured output. Only 'message' and
--- 'severity' are overridden; everything else relies on the class's own
+-- that genuinely existed in the captured output. Only @message@ and
+-- @severity@ are overridden; everything else relies on the class's own
 -- defaults (help/code/related/diagnosticId/diagnosticCause/url ->
 -- Nothing/[]/Nothing; context -> NoContext), same reasoning as
 -- GhcDiagnostic's instance.

@@ -10,6 +10,8 @@ module Tadka.GHCProtocol.Process
   , Signal (..)
   , ProcessError (..)
   , renderCompilerResult
+  , CaptureStatus (..)
+  , renderCaptureStatus
   , BuildResult (..)
     -- * Build timeout
   , Timeout
@@ -68,6 +70,35 @@ renderCompilerResult result = case result of
     showInt :: Int -> Text
     showInt = Text.pack . show
 
+-- | Whether everything the build printed was captured. The build tool's
+-- output pipes can be held open by a process the build started (a compiler,
+-- a daemon) long after the build tool itself exited, so the collector
+-- waits only a bounded time for the end of the output; when it gives up, or
+-- when reading fails, that is recorded here rather than silently losing
+-- lines.
+data CaptureStatus
+  = CaptureComplete
+    -- ^ Both output streams were read to their end.
+  | CaptureStoppedEarly
+    -- ^ Reading stopped before the end of the output because a process
+    -- started by the build was still holding an output pipe open. Output
+    -- written after that point is missing; what was already received,
+    -- including a final partial line, is kept.
+  | CaptureReadFailed Text
+    -- ^ Reading an output pipe failed with this error. What was already
+    -- received, including a final partial line, is kept.
+  deriving stock (Eq, Show)
+
+-- | One plain sentence saying why the captured output may be incomplete;
+-- 'Nothing' when the capture is 'CaptureComplete'.
+renderCaptureStatus :: CaptureStatus -> Maybe Text
+renderCaptureStatus status = case status of
+  CaptureComplete       -> Nothing
+  CaptureStoppedEarly   ->
+    Just "stopped reading the build's output before it ended, because a process started by the build still held it open; later output may be missing"
+  CaptureReadFailed msg ->
+    Just ("reading the build's output failed (" <> msg <> "); output after that point may be missing")
+
 -- | Everything observed about one finished build: how the process ended,
 -- and every output line it produced.
 data BuildResult = BuildResult
@@ -78,6 +109,9 @@ data BuildResult = BuildResult
     -- ^ In the order this collector observed the two pipes deliver
     -- data -- not a guarantee of the child's true cross-stream write
     -- order (I-19): stdout and stderr are independent OS pipes.
+  , captureStatus  :: CaptureStatus
+    -- ^ Whether 'observedOutput' is the whole output or a bounded part
+    -- of it.
   } deriving stock (Eq, Show)
 
 --------------------------------------------------------------------------------

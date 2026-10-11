@@ -8,7 +8,7 @@ releases.
 
 | # | Blocker | Why |
 |---|---|---|
-| 1 | Runner rewrite: audit B1, B2, B3 | A very large build output can stall a non-threaded build; on `--timeout` the compilers started by the build tool can outlive it; a read error silently drops buffered output. |
+| 1 | ~~Runner: audit B1, B2, B3~~ | **Done.** B2 (the timeout was not enforced: `--timeout=1` waited 37 s) is fixed with a process-group stop and a bounded drain. B3 (a read error dropped buffered output) is fixed by flushing on every path and reporting `CaptureStatus`. B1 (hang on large output) did **not** reproduce on GHC 9.4.7 or on 9.14.1 with `process` 1.6.26.1; it has regression tests (2 MB on one stream, 4 MB on both) and needs no change. |
 | 2 | Panic grouping: audit B4 | A panic routed through GHC's diagnostic pipeline is split into separate records. |
 | 3 | ~~maintainer, author, copyright~~ | Done: set in `tadka-ghc.cabal`. |
 | 4 | User testing signed off (see "User testing" below) | The package has been exercised by its own tests only, not yet by a real project. |
@@ -39,6 +39,13 @@ in these places, and the spec should be updated to match:
 - The schema table: GHC 9.10.3 emits schema `1.0`, not `1.1`, and its
   `ghcVersion` field reads `ghc-9.10.3`.
 - `tadka-ghc-process` is a **public** sublibrary (`visibility: public`).
+- `BuildResult` gains `captureStatus` and `BuildOutcome` gains
+  `buildCaptureStatus`; the runner gains `runCaptured` and `RunSettings`
+  (section 6.4). The child runs in its own process group (POSIX), and
+  waiting for its output pipes is bounded.
+- `SchemaVersion`, `mkSchemaVersion` and `unSchemaVersion` are exported
+  from `Tadka.GHCProtocol`, because `DecodeError`'s public constructors
+  carry a `SchemaVersion`.
 
 ## Release checklist (every release)
 

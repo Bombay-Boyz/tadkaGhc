@@ -6,14 +6,14 @@
 -- 'Tadka.message' a total default (context -> NoContext, code -> Nothing,
 -- severity -> SevError, help -> Nothing, url -> Nothing, related -> [],
 -- diagnosticId -> Nothing, diagnosticCause -> Nothing). The spec assumed
--- every method needed an explicit definition; here, 'GhcDiagnostic'
--- overrides only 'message'/'severity'/'help', because the defaults for
+-- every method needed an explicit definition; here, @GhcDiagnostic@
+-- overrides only @message@/@severity@/@help@, because the defaults for
 -- everything else already ARE the behaviour §10/§21 require (never
 -- fabricate a code, never invent related/cause/id) -- omitting them is
 -- not a shortcut, it is the correct, total implementation.
 --
 -- Deliberately defined here rather than in 'Tadka.GHCProtocol.Types'
--- (where 'GhcDiagnostic' itself lives): this is the project's own
+-- (where @GhcDiagnostic@ itself lives): this is the project's own
 -- convention for where a Diagnostic bridge instance lives (mirroring
 -- spec §12's "no orphan instances... defined in Diagnostic.hs" rule),
 -- not a requirement of GHC's own orphan-instance rules.

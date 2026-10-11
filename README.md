@@ -90,8 +90,24 @@ silently overriding anything you wrote.
 
 **Exit status** mirrors the real outcome: the build tool's own exit code
 on an ordinary failure; `124` if `--timeout` was reached; `127` if the
-build tool could not be started; `130` if it was killed by a signal; `2`
-for a usage error or a project directory that does not exist.
+build tool could not be started; `130` if it was killed by a signal;
+`143` or `129` if tadka-ghc itself was terminated (SIGTERM, SIGHUP --
+the build is stopped too); `2` for a usage error or a project directory
+that does not exist.
+
+### Timeouts and interrupts
+
+On Linux and macOS the build runs in its own process group. When
+`--timeout` expires, the whole group is asked to stop, given three
+seconds, and then killed, so the compilers a build starts die with it
+instead of outliving it. Ctrl-C, `kill` (SIGTERM) and SIGHUP stop the
+build's group the same way before tadka-ghc exits.
+
+A process the build started can hold the output pipes open after the
+build tool has exited. tadka-ghc waits two seconds for the output to end
+and then stops reading; whatever was received, including a last line with
+no newline, is kept, and a note on standard error says the output may be
+incomplete. Reading is never silently cut short.
 
 ### Multi-package projects
 
@@ -215,7 +231,15 @@ Documented honestly rather than silently left as gaps:
   a multi-line panic is just grouped into separate records.
 - **Blank lines in failed-build output become empty records.** Cosmetic;
   no information is lost.
-- **Linux is what CI exercises.** macOS and Windows are untested.
+- **One very large multi-line block is processed in quadratic time.** A
+  single multi-line record of tens of thousands of lines (a panic message
+  is normally a few dozen) takes noticeably long: 40,000 lines took about
+  30 seconds in testing. Ordinary output, including many megabytes of
+  it, is linear.
+- **Linux is what CI exercises.** macOS is untested.
+- **On Windows, a timeout stops only the build tool's own process.**
+  Process groups are a POSIX feature, so processes the build started may
+  outlive it there. Windows is otherwise untested.
 
 ## License
 
